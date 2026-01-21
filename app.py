@@ -1,706 +1,1103 @@
-
 # app.py
-# AuraInsight Delivery Growth Intelligence - Streamlit Demo
-# ---------------------------------------------------------
-# Demo goals:
-# - Input restaurant name + address
-# - Optional metrics: impressions, CTR, CVR, AOV, promo spend
-# - Pull (optional) data from APIs: Google Maps (geocode/places/traffic), US Census (ACS), Weather (OpenWeather)
-# - Competitor mining (optional) via Google Places OR Yelp Fusion
-# - Weather & traffic impact coefficients
-# - Bayesian updating for CTR/CVR using Beta priors
-# - Quantitative forecast with probability ranges (P10/P50/P90)
-# - Action plan + A/B tests + KPI dashboard
+# Streamlit: 输入餐厅地址/店名 -> Google Places 匹配 -> 用户确认 -> 拉取公开数据
+# (Google/Yelp/Census+TIGER/NOAA+Meteostat/WalkScore可选) -> 调用 OpenAI 生成深度报告 -> 多语言 -> 导出PDF
 #
-# NOTE: This demo is designed to run even WITHOUT API keys (uses safe fallbacks / illustrative defaults).
+# ✅ 重点：天气已改为 NOAA + Meteostat（无需注册、稳定、适合分析）
 #
-# Run:
-#   pip install -r requirements.txt
-#   streamlit run app.py
+# ---------------------------
+# 安装依赖
+# ---------------------------
+# pip install streamlit requests python-dateutil pandas reportlab meteostat
+# 可选（更漂亮PDF）: pip install markdown2 weasyprint
+#
+# ---------------------------
+# 环境变量
+# ---------------------------
+# GOOGLE_MAPS_API_KEY=...
+# YELP_API_KEY=...
+# OPENAI_API_KEY=...
+# OPENAI_MODEL=gpt-4o-mini   (按你账号可用模型调整)
+# CENSUS_API_KEY=...         (可选：无key也能用部分Census，但建议有)
+# WALKSCORE_API_KEY=...      (可选)
+#
+# ---------------------------
+# 免责声明（产品级做法）
+# ---------------------------
+# - 1mi/3mi 人口等“半径商圈”是基于 Census Tract/County 密度近似估算，不等同于精确环形叠加统计。
+# - 竞品清单来自 Yelp/Google 周边检索，可能漏掉未收录或新店。
+#
+# Author: you + me (严谨版)
 
 import os
-import math
 import json
+import math
 import time
-import datetime as dt
 from dataclasses import dataclass
-from typing import Dict, Any, Optional, Tuple, List
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Tuple
 
-import numpy as np
-import pandas as pd
 import requests
+import pandas as pd
 import streamlit as st
 
-# -----------------------------
-# Page config
-# -----------------------------
-st.set_page_config(page_title="AuraInsight 外卖增收分析 Demo", layout="wide")
+from meteostat import Point, Daily
 
 # -----------------------------
-# i18n dictionary
+# Streamlit config
 # -----------------------------
-I18N = {
-    "zh-CN": {
-        "app_title": "AuraInsight 外卖增收分析（Demo）",
-        "language": "语言",
-        "lang_zh": "中文",
-        "lang_en": "English",
-        "tab_input": "输入",
-        "tab_report": "报告",
-        "tab_debug": "调试/数据源",
-        "restaurant_name": "餐厅名称",
-        "address": "地址（完整）",
-        "cuisine": "菜系",
-        "platforms": "使用的外卖平台",
-        "optional_metrics": "可选：近30天平台指标（没有也能生成报告）",
-        "impressions": "曝光量（Impressions）",
-        "ctr": "点击率 CTR（%）",
-        "cvr": "下单率 CVR（%）",
-        "aov": "客单价 AOV（$）",
-        "promo": "活动花费 Promo Spend（$）",
-        "generate": "生成报告",
-        "api_keys": "API Keys（可选）",
-        "google_key": "Google Maps API Key（Geocode/Places/Traffic）",
-        "census_key": "US Census API Key（ACS）",
-        "openweather_key": "OpenWeather API Key（天气）",
-        "yelp_key": "Yelp Fusion API Key（竞对/口碑，可选）",
-        "assumptions": "输入与假设（可编辑）",
-        "data_sources": "数据源与可验证性",
-        "no_keys_fallback": "未提供关键API Key：本Demo将使用保守默认值与示例数据（仍可演示完整逻辑）。",
-        "geo": "地理信息",
-        "latlng": "经纬度",
-        "trade_area": "商圈画像（1mi/3mi）",
-        "competitors": "竞对分析（重点）",
-        "weather_traffic": "天气与交通影响（必须）",
-        "funnel": "转化漏斗诊断",
-        "bayes": "贝叶斯预测（概率，不是拍脑袋）",
-        "quant": "量化预测模型（Orders & Revenue）",
-        "plan": "30/60/90 天行动计划",
-        "abtests": "A/B 测试设计",
-        "kpi": "KPI 仪表盘",
-        "export_hint": "（Demo 版：此处先展示报告结构与关键计算；PDF 导出可在下一迭代加入。）",
-        "warn_low_data": "提示：你没有提供平台指标（曝光/CTR/CVR等），系统会用行业先验 + 可解释代理变量进行估计，预测区间会更宽。",
-    },
-    "en-US": {
-        "app_title": "AuraInsight Delivery Growth (Demo)",
-        "language": "Language",
-        "lang_zh": "Chinese",
-        "lang_en": "English",
-        "tab_input": "Input",
-        "tab_report": "Report",
-        "tab_debug": "Debug / Sources",
-        "restaurant_name": "Restaurant name",
-        "address": "Full address",
-        "cuisine": "Cuisine",
-        "platforms": "Delivery platforms",
-        "optional_metrics": "Optional: last 30 days metrics (report still works without)",
-        "impressions": "Impressions",
-        "ctr": "CTR (%)",
-        "cvr": "CVR (%)",
-        "aov": "AOV ($)",
-        "promo": "Promo spend ($)",
-        "generate": "Generate report",
-        "api_keys": "API Keys (optional)",
-        "google_key": "Google Maps API Key (Geocode/Places/Traffic)",
-        "census_key": "US Census API Key (ACS)",
-        "openweather_key": "OpenWeather API Key (Weather)",
-        "yelp_key": "Yelp Fusion API Key (competitors/reviews, optional)",
-        "assumptions": "Inputs & Assumptions (editable)",
-        "data_sources": "Data sources & verifiability",
-        "no_keys_fallback": "Missing key API credentials: demo will use conservative defaults and sample data (full logic still shown).",
-        "geo": "Geo",
-        "latlng": "Lat/Lng",
-        "trade_area": "Trade area (1mi/3mi)",
-        "competitors": "Competitor analysis (core)",
-        "weather_traffic": "Weather & traffic impact (required)",
-        "funnel": "Conversion funnel",
-        "bayes": "Bayesian forecast (probabilistic)",
-        "quant": "Quantitative model (Orders & Revenue)",
-        "plan": "30/60/90-day action plan",
-        "abtests": "A/B testing plan",
-        "kpi": "KPI dashboard",
-        "export_hint": "(Demo: shows structure + key calculations; PDF export can be added next.)",
-        "warn_low_data": "Note: no platform metrics provided. The system will estimate using priors + explainable proxies; prediction intervals will be wider.",
-    }
-}
-
-def t(key: str) -> str:
-    lang = st.session_state.get("lang", "zh-CN")
-    return I18N.get(lang, I18N["zh-CN"]).get(key, key)
+st.set_page_config(page_title="AuraInsight · 餐厅商圈与增长分析", layout="wide")
 
 # -----------------------------
-# Bayesian helpers
+# ENV
 # -----------------------------
-def beta_posterior_from_rate(impressions: Optional[int], rate: Optional[float], alpha0: float, beta0: float,
-                             pseudo_n: int = 200) -> Tuple[float, float, bool]:
-    """
-    Return posterior (alpha, beta) for a rate using Beta prior.
-    If impressions is missing, approximate with pseudo_n trials to keep uncertainty honest.
-    """
-    used_pseudo = False
-    if rate is None:
-        return alpha0, beta0, True
-    r = max(0.0, min(1.0, float(rate)))
-    n = impressions if (impressions is not None and impressions > 0) else pseudo_n
-    if impressions is None or impressions <= 0:
-        used_pseudo = True
-    succ = r * n
-    fail = (1.0 - r) * n
-    return alpha0 + succ, beta0 + fail, used_pseudo
+GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
+YELP_API_KEY = os.getenv("YELP_API_KEY", "")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+CENSUS_API_KEY = os.getenv("CENSUS_API_KEY", "")
+WALKSCORE_API_KEY = os.getenv("WALKSCORE_API_KEY", "")
 
-def beta_quantiles(alpha: float, beta: float, qs=(0.1, 0.5, 0.9)) -> Dict[float, float]:
-    from scipy.stats import beta as beta_dist
-    return {q: float(beta_dist.ppf(q, alpha, beta)) for q in qs}
+USER_AGENT = "AuraInsight-Analyzer/1.0"
 
-def prob_beta_greater(alpha: float, beta: float, threshold: float) -> float:
-    from scipy.stats import beta as beta_dist
-    return float(1.0 - beta_dist.cdf(threshold, alpha, beta))
+DEFAULT_RADII_MI = [1, 3]  # 样板：1 mile / 3 mile
+
 
 # -----------------------------
-# External API wrappers (optional)
+# Errors
 # -----------------------------
-@st.cache_data(show_spinner=False, ttl=60 * 60)
-def geocode_google(address: str, google_key: str) -> Optional[Tuple[float, float]]:
-    if not google_key:
-        return None
-    url = "https://maps.googleapis.com/maps/api/geocode/json"
-    r = requests.get(url, params={"address": address, "key": google_key}, timeout=20)
-    r.raise_for_status()
-    data = r.json()
-    if data.get("status") != "OK":
-        return None
-    loc = data["results"][0]["geometry"]["location"]
-    return float(loc["lat"]), float(loc["lng"])
+class APIError(Exception):
+    pass
 
-@st.cache_data(show_spinner=False, ttl=60 * 60)
-def weather_openweather(lat: float, lng: float, key: str) -> Optional[Dict[str, Any]]:
-    if not key:
-        return None
-    # One Call 3.0 endpoint (requires subscription in some tiers). We use /data/2.5/forecast as fallback-friendly.
-    # We'll use "onecall" if available, else forecast.
-    onecall = "https://api.openweathermap.org/data/3.0/onecall"
-    try:
-        r = requests.get(onecall, params={"lat": lat, "lon": lng, "appid": key, "units": "imperial"}, timeout=20)
-        if r.status_code == 200:
-            return {"provider": "openweather_onecall", "data": r.json()}
-    except Exception:
-        pass
-    forecast = "https://api.openweathermap.org/data/2.5/forecast"
-    r = requests.get(forecast, params={"lat": lat, "lon": lng, "appid": key, "units": "imperial"}, timeout=20)
-    if r.status_code != 200:
-        return None
-    return {"provider": "openweather_forecast", "data": r.json()}
-
-@st.cache_data(show_spinner=False, ttl=60 * 60)
-def distance_matrix_google(origin: str, dest: str, google_key: str) -> Optional[Dict[str, Any]]:
-    if not google_key:
-        return None
-    url = "https://maps.googleapis.com/maps/api/distancematrix/json"
-    params = {
-        "origins": origin,
-        "destinations": dest,
-        "departure_time": "now",
-        "key": google_key
-    }
-    r = requests.get(url, params=params, timeout=20)
-    r.raise_for_status()
-    return r.json()
-
-@st.cache_data(show_spinner=False, ttl=60 * 60)
-def places_nearby_google(lat: float, lng: float, radius_m: int, keyword: str, google_key: str) -> Optional[List[Dict[str, Any]]]:
-    if not google_key:
-        return None
-    url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
-    params = {
-        "location": f"{lat},{lng}",
-        "radius": radius_m,
-        "keyword": keyword,
-        "type": "restaurant",
-        "key": google_key
-    }
-    r = requests.get(url, params=params, timeout=20)
-    r.raise_for_status()
-    data = r.json()
-    if data.get("status") not in ("OK", "ZERO_RESULTS"):
-        return None
-    return data.get("results", [])
-
-# Census: for demo we keep it simple and optionally show how to query.
-# Trade-area exact ring computation + tract mapping is a next iteration; here we show a conservative, explainable default.
-# -----------------------------
-# Coefficients
-# -----------------------------
-def weather_coefficient(temp_f: float, precip_mm: float, condition: str) -> float:
-    """
-    Simple explainable weather -> demand coefficient.
-    Conservative defaults:
-      - Rain increases demand up to +25%
-      - Cold (<50F) increases +8%
-      - Heat (>90F) increases +6%
-    """
-    coef = 1.0
-    if precip_mm and precip_mm > 0:
-        coef *= 1.15
-        if precip_mm > 5:
-            coef *= 1.08
-    if temp_f < 50:
-        coef *= 1.08
-    if temp_f > 90:
-        coef *= 1.06
-    # Fog/wind can increase "stay-in" but also add delivery delay; we leave to traffic coefficient.
-    return float(min(1.35, max(0.85, coef)))
-
-def traffic_coefficient(duration_sec: Optional[float], duration_in_traffic_sec: Optional[float]) -> Tuple[float, float]:
-    """
-    Fulfillment risk coefficient derived from congestion index.
-    coef reduces effective conversion when traffic is worse.
-    """
-    if not duration_sec or not duration_in_traffic_sec or duration_sec <= 0:
-        return 1.0, 1.0
-    cong = duration_in_traffic_sec / duration_sec
-    # Map congestion ratio to coefficient: mild congestion little impact; heavy congestion reduces conversion and increases cancellations.
-    # This is a conservative mapping for demo.
-    coef = 1.0
-    if cong >= 1.1:
-        coef = 0.97
-    if cong >= 1.25:
-        coef = 0.93
-    if cong >= 1.5:
-        coef = 0.88
-    return float(coef), float(cong)
 
 # -----------------------------
-# Default priors (industry baselines)
+# HTTP helpers + cache
+# -----------------------------
+def _req_json(
+    method: str,
+    url: str,
+    headers: Optional[dict] = None,
+    params: Optional[dict] = None,
+    json_body: Optional[dict] = None,
+    timeout: int = 30,
+    retries: int = 2,
+    backoff: float = 1.4,
+) -> dict:
+    headers = headers or {}
+    headers.setdefault("User-Agent", USER_AGENT)
+
+    last_err = None
+    for i in range(retries + 1):
+        try:
+            r = requests.request(
+                method=method.upper(),
+                url=url,
+                headers=headers,
+                params=params,
+                json=json_body,
+                timeout=timeout,
+            )
+            if r.status_code == 429:
+                time.sleep(backoff ** (i + 1))
+                continue
+            if r.status_code >= 400:
+                raise APIError(f"{url} -> HTTP {r.status_code}: {r.text[:500]}")
+            if "application/json" in r.headers.get("content-type", ""):
+                return r.json()
+            # NOAA有时 text/json
+            return json.loads(r.text)
+        except Exception as e:
+            last_err = e
+            time.sleep(backoff ** (i + 1))
+    raise APIError(f"Request failed after retries: {url} | {repr(last_err)}")
+
+
+@st.cache_data(show_spinner=False, ttl=60 * 60 * 24)  # 24h
+def cached_http_json(method: str, url: str, params_key: str, headers_key: str, body_key: str) -> dict:
+    params = json.loads(params_key) if params_key else None
+    headers = json.loads(headers_key) if headers_key else None
+    body = json.loads(body_key) if body_key else None
+    return _req_json(method, url, headers=headers, params=params, json_body=body)
+
+
+def http_json_cached(method: str, url: str, params: Optional[dict] = None, headers: Optional[dict] = None, body: Optional[dict] = None) -> dict:
+    return cached_http_json(
+        method=method,
+        url=url,
+        params_key=json.dumps(params or {}, sort_keys=True),
+        headers_key=json.dumps(headers or {}, sort_keys=True),
+        body_key=json.dumps(body or {}, sort_keys=True),
+    )
+
+
+# -----------------------------
+# Google Places
 # -----------------------------
 @dataclass
-class Priors:
-    ctr_alpha: float = 8.0   # mean ~ 8/(8+92)=8%
-    ctr_beta: float = 92.0
-    cvr_alpha: float = 20.0  # mean ~ 20/(20+80)=20%
-    cvr_beta: float = 80.0
-    aov_mu: float = math.log(26.0)  # lognormal mean-ish around 26
-    aov_sigma: float = 0.35
+class PlaceCandidate:
+    name: str
+    place_id: str
+    address: str
+    lat: float
+    lng: float
+    types: List[str]
+    rating: Optional[float]
+    user_ratings_total: Optional[int]
 
-PRIORS = Priors()
+
+def google_text_search(query: str) -> List[PlaceCandidate]:
+    if not GOOGLE_MAPS_API_KEY:
+        raise APIError("Missing GOOGLE_MAPS_API_KEY")
+    url = "https://maps.googleapis.com/maps/api/place/textsearch/json"
+    params = {"query": query, "key": GOOGLE_MAPS_API_KEY}
+    data = http_json_cached("GET", url, params=params)
+
+    results = data.get("results", []) or []
+    out: List[PlaceCandidate] = []
+    for r in results[:10]:
+        loc = (r.get("geometry") or {}).get("location") or {}
+        out.append(
+            PlaceCandidate(
+                name=r.get("name", "") or "",
+                place_id=r.get("place_id", "") or "",
+                address=r.get("formatted_address", "") or "",
+                lat=float(loc.get("lat", 0.0) or 0.0),
+                lng=float(loc.get("lng", 0.0) or 0.0),
+                types=r.get("types") or [],
+                rating=r.get("rating"),
+                user_ratings_total=r.get("user_ratings_total"),
+            )
+        )
+    return out
+
+
+def google_place_details(place_id: str) -> dict:
+    if not GOOGLE_MAPS_API_KEY:
+        raise APIError("Missing GOOGLE_MAPS_API_KEY")
+    url = "https://maps.googleapis.com/maps/api/place/details/json"
+    fields = ",".join(
+        [
+            "name",
+            "place_id",
+            "formatted_address",
+            "geometry",
+            "types",
+            "rating",
+            "user_ratings_total",
+            "opening_hours",
+            "website",
+            "formatted_phone_number",
+            "price_level",
+            "business_status",
+        ]
+    )
+    params = {"place_id": place_id, "fields": fields, "key": GOOGLE_MAPS_API_KEY, "language": "en"}
+    data = http_json_cached("GET", url, params=params)
+    if data.get("status") != "OK":
+        raise APIError(f"Google Place Details failed: {data.get('status')} {data.get('error_message','')}")
+    return data["result"]
+
+
+def google_nearby_search(lat: float, lng: float, radius_m: int, keyword: str = "", type_: str = "restaurant") -> List[dict]:
+    if not GOOGLE_MAPS_API_KEY:
+        raise APIError("Missing GOOGLE_MAPS_API_KEY")
+    url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
+    params = {"location": f"{lat},{lng}", "radius": radius_m, "type": type_, "key": GOOGLE_MAPS_API_KEY}
+    if keyword:
+        params["keyword"] = keyword
+    data = http_json_cached("GET", url, params=params)
+    return (data.get("results") or [])[:20]
+
 
 # -----------------------------
-# UI: sidebar
+# Yelp Fusion
 # -----------------------------
-st.sidebar.markdown("### " + t("language"))
-lang = st.sidebar.radio("", options=["zh-CN", "en-US"], index=0, format_func=lambda x: I18N[x]["lang_zh"] if x=="zh-CN" else I18N[x]["lang_en"])
-st.session_state["lang"] = lang
+def yelp_headers() -> dict:
+    if not YELP_API_KEY:
+        raise APIError("Missing YELP_API_KEY")
+    return {"Authorization": f"Bearer {YELP_API_KEY}", "User-Agent": USER_AGENT}
 
-st.sidebar.markdown("### " + t("api_keys"))
-google_key = st.sidebar.text_input(t("google_key"), value=os.getenv("GOOGLE_MAPS_API_KEY", ""), type="password")
-census_key = st.sidebar.text_input(t("census_key"), value=os.getenv("CENSUS_API_KEY", ""), type="password")
-openweather_key = st.sidebar.text_input(t("openweather_key"), value=os.getenv("OPENWEATHER_API_KEY", ""), type="password")
-yelp_key = st.sidebar.text_input(t("yelp_key"), value=os.getenv("YELP_API_KEY", ""), type="password")
 
-st.sidebar.info(t("no_keys_fallback"))
+def yelp_business_search(name: str, lat: float, lng: float) -> Optional[dict]:
+    url = "https://api.yelp.com/v3/businesses/search"
+    params = {
+        "term": name,
+        "latitude": lat,
+        "longitude": lng,
+        "limit": 5,
+        "sort_by": "best_match",
+    }
+    data = http_json_cached("GET", url, params=params, headers=yelp_headers())
+    businesses = data.get("businesses") or []
+    return businesses[0] if businesses else None
+
+
+def yelp_business_details(business_id: str) -> dict:
+    url = f"https://api.yelp.com/v3/businesses/{business_id}"
+    return http_json_cached("GET", url, headers=yelp_headers())
+
+
+def yelp_business_reviews(business_id: str) -> dict:
+    url = f"https://api.yelp.com/v3/businesses/{business_id}/reviews"
+    return http_json_cached("GET", url, headers=yelp_headers())
+
+
+def yelp_competitors(lat: float, lng: float, radius_m: int = 4800, categories: Optional[str] = None) -> List[dict]:
+    url = "https://api.yelp.com/v3/businesses/search"
+    params = {
+        "latitude": lat,
+        "longitude": lng,
+        "radius": min(radius_m, 40000),
+        "limit": 20,
+        "sort_by": "rating",
+    }
+    if categories:
+        params["categories"] = categories
+    data = http_json_cached("GET", url, params=params, headers=yelp_headers())
+    return data.get("businesses") or []
+
 
 # -----------------------------
-# Main tabs
+# Weather: NOAA + Meteostat
 # -----------------------------
-st.title(t("app_title"))
-tab_input, tab_report, tab_debug = st.tabs([t("tab_input"), t("tab_report"), t("tab_debug")])
+def noaa_points(lat: float, lng: float) -> dict:
+    url = f"https://api.weather.gov/points/{lat:.4f},{lng:.4f}"
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/geo+json"}
+    return http_json_cached("GET", url, headers=headers)
 
-# -----------------------------
-# Input tab
-# -----------------------------
-with tab_input:
-    col1, col2 = st.columns([2, 1])
 
-    with col1:
-        name = st.text_input(t("restaurant_name"), value="Ohana Hawaiian BBQ")
-        address = st.text_input(t("address"), value="1240 Anderson Dr #103, Suisun City, CA 94585")
-        cuisine = st.text_input(t("cuisine"), value="Hawaiian BBQ / Plate Lunch")
-        platforms = st.multiselect(t("platforms"),
-                                  options=["DoorDash", "Uber Eats", "Grubhub", "Fantuan (饭团)", "HungryPanda (熊猫)", "Other"],
-                                  default=["DoorDash", "Uber Eats"])
+def noaa_forecast(lat: float, lng: float) -> dict:
+    p = noaa_points(lat, lng)
+    forecast_url = (p.get("properties") or {}).get("forecast")
+    if not forecast_url:
+        raise APIError("NOAA points missing forecast url")
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/geo+json"}
+    return http_json_cached("GET", forecast_url, headers=headers)
 
-        st.markdown("#### " + t("optional_metrics"))
-        m1, m2, m3 = st.columns(3)
-        with m1:
-            impressions = st.number_input(t("impressions"), min_value=0, value=0, step=100)
-        with m2:
-            ctr_pct = st.number_input(t("ctr"), min_value=0.0, max_value=100.0, value=0.0, step=0.1)
-        with m3:
-            cvr_pct = st.number_input(t("cvr"), min_value=0.0, max_value=100.0, value=0.0, step=0.1)
 
-        m4, m5 = st.columns(2)
-        with m4:
-            aov = st.number_input(t("aov"), min_value=0.0, value=0.0, step=1.0)
-        with m5:
-            promo = st.number_input(t("promo"), min_value=0.0, value=0.0, step=10.0)
+@st.cache_data(show_spinner=False, ttl=60 * 60 * 24)
+def meteostat_daily(lat: float, lng: float, days: int = 365) -> pd.DataFrame:
+    # Meteostat: 学术级历史数据（无需key）
+    end = datetime.utcnow()
+    start = end - timedelta(days=days)
+    location = Point(lat, lng)
+    df = Daily(location, start, end).fetch()
+    if df is None or df.empty:
+        return pd.DataFrame()
+    df = df.reset_index()
+    # 字段：tavg/tmin/tmax/prcp/snow/wspd/...
+    return df
 
-        gen = st.button(t("generate"), type="primary")
 
-    with col2:
-        st.markdown("### " + t("assumptions"))
-        # Editable assumptions for demo
-        radius_miles_core = st.slider("Core radius (miles)", 0.5, 5.0, 3.0, 0.5)
-        # Trade-area population defaults (conservative placeholders)
-        pop_1mi = st.number_input("Population (1mi) - fallback", min_value=0, value=20000, step=1000)
-        pop_3mi = st.number_input("Population (3mi) - fallback", min_value=0, value=90000, step=5000)
-        median_income = st.number_input("Median household income ($) - fallback", min_value=0, value=97083, step=1000)
-        delivery_pen = st.slider("Delivery penetration (share of people ordering delivery monthly)", 0.05, 0.40, 0.22, 0.01)
-        freq = st.slider("Monthly delivery frequency (orders/person/month)", 1.0, 5.0, 2.5, 0.1)
-
-        st.caption(t("export_hint"))
-
-    if gen:
-        st.session_state["run"] = {
-            "name": name, "address": address, "cuisine": cuisine, "platforms": platforms,
-            "impressions": int(impressions) if impressions else None,
-            "ctr": (ctr_pct / 100.0) if ctr_pct else None,
-            "cvr": (cvr_pct / 100.0) if cvr_pct else None,
-            "aov": float(aov) if aov else None,
-            "promo": float(promo) if promo else None,
-            "assumptions": {
-                "radius_miles_core": radius_miles_core,
-                "pop_1mi": pop_1mi,
-                "pop_3mi": pop_3mi,
-                "median_income": median_income,
-                "delivery_pen": delivery_pen,
-                "freq": freq,
-            }
+def summarize_weather(df: pd.DataFrame) -> dict:
+    if df is None or df.empty:
+        return {
+            "days": 0,
+            "rain_days": None,
+            "heavy_rain_days": None,
+            "hot_days": None,
+            "cold_days": None,
+            "avg_tavg_c": None,
+            "total_prcp_mm": None,
         }
-        st.success("✅ Report job created. Go to the Report tab.")
+
+    days = len(df)
+    # prcp: mm (Meteostat)
+    rain_days = int((df["prcp"].fillna(0) > 0.5).sum())
+    heavy_rain_days = int((df["prcp"].fillna(0) > 10).sum())
+    # tmax/tmin: °C
+    hot_days = int((df["tmax"].fillna(-999) > 30).sum())   # >86°F
+    cold_days = int((df["tmin"].fillna(999) < 5).sum())    # <41°F
+    avg_tavg = float(df["tavg"].dropna().mean()) if df["tavg"].notna().any() else None
+    total_prcp = float(df["prcp"].fillna(0).sum())
+
+    return {
+        "days": days,
+        "rain_days": rain_days,
+        "heavy_rain_days": heavy_rain_days,
+        "hot_days": hot_days,
+        "cold_days": cold_days,
+        "avg_tavg_c": avg_tavg,
+        "total_prcp_mm": total_prcp,
+    }
+
 
 # -----------------------------
-# Report tab
+# Census: FCC -> GEOIDs -> ACS + TIGER land area
 # -----------------------------
-with tab_report:
-    run = st.session_state.get("run")
-    if not run:
-        st.info("Fill inputs and click Generate.")
+def fcc_block_geoid(lat: float, lng: float) -> dict:
+    # FCC Census Block API: lat/lon -> state/county/tract/block FIPS
+    url = "https://geo.fcc.gov/api/census/block/find"
+    params = {"latitude": lat, "longitude": lng, "format": "json"}
+    return http_json_cached("GET", url, params=params)
+
+
+def tiger_tract_land_area(state: str, county: str, tract: str) -> Optional[int]:
+    # TIGERweb: get ALAND for tract (m^2)
+    # layer: Census Tracts
+    # https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/Tracts_Blocks/MapServer/2/query
+    url = "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/Tracts_Blocks/MapServer/2/query"
+    geoid = f"{state}{county}{tract}"
+    params = {
+        "where": f"GEOID='{geoid}'",
+        "outFields": "ALAND,GEOID,NAME",
+        "f": "json",
+    }
+    data = http_json_cached("GET", url, params=params)
+    feats = data.get("features") or []
+    if not feats:
+        return None
+    attrs = feats[0].get("attributes") or {}
+    aland = attrs.get("ALAND")
+    return int(aland) if aland is not None else None
+
+
+def tiger_county_land_area(state: str, county: str) -> Optional[int]:
+    # TIGERweb Counties layer
+    url = "https://tigerweb.geo.census.gov/arcgis/rest/services/TIGERweb/County/MapServer/0/query"
+    geoid = f"{state}{county}"
+    params = {
+        "where": f"GEOID='{geoid}'",
+        "outFields": "ALAND,GEOID,NAME",
+        "f": "json",
+    }
+    data = http_json_cached("GET", url, params=params)
+    feats = data.get("features") or []
+    if not feats:
+        return None
+    attrs = feats[0].get("attributes") or {}
+    aland = attrs.get("ALAND")
+    return int(aland) if aland is not None else None
+
+
+def acs_tract_profile(state: str, county: str, tract: str) -> dict:
+    # ACS 5-year: tract-level key vars
+    # variables:
+    # B01003_001E total population
+    # B19013_001E median household income
+    # DP05_0037PE Asian alone percent (DP05_0037PE)
+    # DP05_0071PE Hispanic percent (DP05_0071PE)
+    # DP05_0033PE White alone percent (DP05_0033PE)
+    # DP02_0001E households (DP02_0001E)
+    #
+    # DP* tables are in /profile endpoint.
+    base = "https://api.census.gov/data/2022/acs/acs5/profile"
+    vars_ = [
+        "DP05_0001E",   # Total population (profile)
+        "DP02_0001E",   # Households
+        "DP03_0062E",   # Median household income (approx; DP03 varies, this is "Median household income" in profile)
+        "DP05_0033PE",  # White %
+        "DP05_0037PE",  # Asian %
+        "DP05_0071PE",  # Hispanic %
+        "NAME",
+    ]
+    params = {
+        "get": ",".join(vars_),
+        "for": f"tract:{tract}",
+        "in": f"state:{state} county:{county}",
+    }
+    if CENSUS_API_KEY:
+        params["key"] = CENSUS_API_KEY
+
+    data = http_json_cached("GET", base, params=params)
+    # First row headers, second row values
+    if not isinstance(data, list) or len(data) < 2:
+        raise APIError("Census ACS response unexpected")
+    headers = data[0]
+    values = data[1]
+    out = dict(zip(headers, values))
+    return out
+
+
+def safe_int(x: Any) -> Optional[int]:
+    try:
+        if x is None or x == "":
+            return None
+        return int(float(x))
+    except Exception:
+        return None
+
+
+def safe_float(x: Any) -> Optional[float]:
+    try:
+        if x is None or x == "":
+            return None
+        return float(x)
+    except Exception:
+        return None
+
+
+def estimate_radius_population(
+    radius_miles: float,
+    tract_pop: Optional[int],
+    tract_aland_m2: Optional[int],
+    county_pop: Optional[int],
+    county_aland_m2: Optional[int],
+) -> Tuple[Optional[int], str]:
+    """
+    半径人口近似：
+    - 1mi：优先用 tract 密度估算并上限=tract_pop
+    - 3mi：优先用 county 密度估算（范围更大），避免tract过小导致失真
+    """
+    r_m = radius_miles * 1609.344
+    area_circle = math.pi * (r_m ** 2)
+
+    def density(pop: Optional[int], aland: Optional[int]) -> Optional[float]:
+        if pop is None or aland is None or aland <= 0:
+            return None
+        return pop / aland  # people per m^2
+
+    if radius_miles <= 1.5:
+        d = density(tract_pop, tract_aland_m2)
+        if d is None:
+            return None, "density_missing"
+        est = int(d * area_circle)
+        if tract_pop is not None:
+            est = min(est, tract_pop)
+        return max(est, 0), "tract_density"
     else:
-        # Progress simulation
-        prog = st.progress(0, text="Initializing…")
-        time.sleep(0.1)
+        d = density(county_pop, county_aland_m2)
+        if d is None:
+            return None, "density_missing"
+        est = int(d * area_circle)
+        return max(est, 0), "county_density"
 
-        # 1) Geocode
-        prog.progress(10, text="Geocoding…")
-        latlng = None
+
+def census_bundle_from_latlng(lat: float, lng: float) -> dict:
+    fcc = fcc_block_geoid(lat, lng)
+    block = (fcc.get("Block") or {})
+    fips = block.get("FIPS")
+    if not fips or len(fips) < 11:
+        raise APIError("FCC did not return valid FIPS")
+    # FIPS: SSCCCTTTTTTBBBB -> take needed pieces
+    state = fips[0:2]
+    county = fips[2:5]
+    tract = fips[5:11]
+
+    acs = acs_tract_profile(state, county, tract)
+
+    tract_pop = safe_int(acs.get("DP05_0001E"))
+    households = safe_int(acs.get("DP02_0001E"))
+    med_income = safe_int(acs.get("DP03_0062E"))
+    pct_white = safe_float(acs.get("DP05_0033PE"))
+    pct_asian = safe_float(acs.get("DP05_0037PE"))
+    pct_hisp = safe_float(acs.get("DP05_0071PE"))
+
+    tract_aland = tiger_tract_land_area(state, county, tract)
+    county_aland = tiger_county_land_area(state, county)
+
+    # county population：用 ACS5（non-profile endpoint）更稳，但这里用 profile county 也行
+    # 为简化：用同profile接口 county层
+    base = "https://api.census.gov/data/2022/acs/acs5/profile"
+    params = {"get": "DP05_0001E,NAME", "for": f"county:{county}", "in": f"state:{state}"}
+    if CENSUS_API_KEY:
+        params["key"] = CENSUS_API_KEY
+    county_data = http_json_cached("GET", base, params=params)
+    county_pop = None
+    if isinstance(county_data, list) and len(county_data) >= 2:
+        headers = county_data[0]
+        values = county_data[1]
+        row = dict(zip(headers, values))
+        county_pop = safe_int(row.get("DP05_0001E"))
+
+    return {
+        "fcc": fcc,
+        "state_fips": state,
+        "county_fips": county,
+        "tract": tract,
+        "tract_name": acs.get("NAME"),
+        "tract_pop": tract_pop,
+        "households": households,
+        "median_household_income": med_income,
+        "pct_white": pct_white,
+        "pct_asian": pct_asian,
+        "pct_hispanic": pct_hisp,
+        "tract_aland_m2": tract_aland,
+        "county_pop": county_pop,
+        "county_aland_m2": county_aland,
+    }
+
+
+# -----------------------------
+# WalkScore (optional)
+# -----------------------------
+def walkscore(lat: float, lng: float, address: str) -> Optional[dict]:
+    if not WALKSCORE_API_KEY:
+        return None
+    url = "https://api.walkscore.com/score"
+    params = {
+        "format": "json",
+        "address": address,
+        "lat": lat,
+        "lon": lng,
+        "transit": 1,
+        "bike": 1,
+        "wsapikey": WALKSCORE_API_KEY,
+    }
+    try:
+        return http_json_cached("GET", url, params=params)
+    except Exception:
+        return None
+
+
+# -----------------------------
+# OpenAI (via REST) - generate & translate
+# -----------------------------
+def openai_headers() -> dict:
+    if not OPENAI_API_KEY:
+        raise APIError("Missing OPENAI_API_KEY")
+    return {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+
+
+def openai_chat(prompt_system: str, prompt_user: str, temperature: float = 0.3, max_tokens: int = 3500) -> str:
+    """
+    Uses Chat Completions compatible endpoint. If your account requires Responses API,
+    you can switch. This one works for many setups.
+    """
+    url = "https://api.openai.com/v1/chat/completions"
+    body = {
+        "model": OPENAI_MODEL,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "messages": [
+            {"role": "system", "content": prompt_system},
+            {"role": "user", "content": prompt_user},
+        ],
+    }
+    data = _req_json("POST", url, headers=openai_headers(), json_body=body, timeout=90, retries=1)
+    choices = data.get("choices") or []
+    if not choices:
+        raise APIError("OpenAI returned no choices")
+    return (choices[0].get("message") or {}).get("content") or ""
+
+
+def translate_text(text: str, target_lang: str) -> str:
+    # target_lang: "zh" or "en"
+    if target_lang not in ("zh", "en"):
+        return text
+    sys = "You are a professional business report translator. Preserve structure, headings, tables, [FACT]/[INFERENCE]/[ASSUMPTION]/[STRATEGY] tags. Do not add or remove content."
+    if target_lang == "zh":
+        user = f"Translate to Simplified Chinese:\n\n{text}"
+    else:
+        user = f"Translate to English:\n\n{text}"
+    return openai_chat(sys, user, temperature=0.1, max_tokens=3500)
+
+
+# -----------------------------
+# Report builder: data bundle -> prompt -> report markdown
+# -----------------------------
+def miles_to_meters(mi: float) -> int:
+    return int(mi * 1609.344)
+
+
+def build_data_bundle(place: dict) -> dict:
+    name = place.get("name", "")
+    address = place.get("formatted_address", "")
+    geom = (place.get("geometry") or {}).get("location") or {}
+    lat = float(geom.get("lat", 0.0) or 0.0)
+    lng = float(geom.get("lng", 0.0) or 0.0)
+
+    # Yelp
+    yelp_match = None
+    yelp_details = None
+    yelp_reviews = None
+    competitors_yelp = []
+    try:
+        if YELP_API_KEY:
+            yelp_match = yelp_business_search(name, lat, lng)
+            if yelp_match and yelp_match.get("id"):
+                yelp_details = yelp_business_details(yelp_match["id"])
+                yelp_reviews = yelp_business_reviews(yelp_match["id"])
+            competitors_yelp = yelp_competitors(lat, lng, radius_m=miles_to_meters(3))
+    except Exception as e:
+        competitors_yelp = competitors_yelp or []
+        yelp_details = yelp_details or None
+        yelp_reviews = yelp_reviews or None
+
+    # Google nearby competitors (backup)
+    competitors_google = []
+    try:
+        competitors_google = google_nearby_search(lat, lng, radius_m=miles_to_meters(3), type_="restaurant")
+    except Exception:
+        competitors_google = []
+
+    # Census
+    census = {}
+    try:
+        census = census_bundle_from_latlng(lat, lng)
+    except Exception as e:
+        census = {"error": str(e)}
+
+    # Radius estimates
+    radius_stats = []
+    for r in DEFAULT_RADII_MI:
+        est_pop, method = estimate_radius_population(
+            radius_miles=r,
+            tract_pop=census.get("tract_pop"),
+            tract_aland_m2=census.get("tract_aland_m2"),
+            county_pop=census.get("county_pop"),
+            county_aland_m2=census.get("county_aland_m2"),
+        )
+        radius_stats.append({"radius_miles": r, "est_population": est_pop, "method": method})
+
+    # Weather: NOAA forecast + Meteostat history
+    noaa_fc = None
+    try:
+        noaa_fc = noaa_forecast(lat, lng)
+    except Exception as e:
+        noaa_fc = {"error": str(e)}
+
+    hist_df = meteostat_daily(lat, lng, days=365)
+    weather_summary = summarize_weather(hist_df)
+
+    # WalkScore optional
+    ws = None
+    try:
+        ws = walkscore(lat, lng, address)
+    except Exception:
+        ws = None
+
+    return {
+        "place": place,
+        "lat": lat,
+        "lng": lng,
+        "google": {
+            "rating": place.get("rating"),
+            "user_ratings_total": place.get("user_ratings_total"),
+            "types": place.get("types"),
+            "price_level": place.get("price_level"),
+            "business_status": place.get("business_status"),
+            "phone": place.get("formatted_phone_number"),
+            "website": place.get("website"),
+            "opening_hours": (place.get("opening_hours") or {}).get("weekday_text"),
+        },
+        "yelp": {
+            "match": yelp_match,
+            "details": yelp_details,
+            "reviews": yelp_reviews,
+            "competitors": competitors_yelp,
+        },
+        "competitors_google": competitors_google,
+        "census": census,
+        "radius_stats": radius_stats,
+        "weather": {
+            "noaa_forecast": noaa_fc,
+            "meteostat_days": 365,
+            "meteostat_summary": weather_summary,
+        },
+        "walkscore": ws,
+        # (可扩展) safegraph / crime / traffic / POI density
+    }
+
+
+def compact_competitors(yelp_list: List[dict], google_list: List[dict]) -> List[dict]:
+    """
+    给模型的竞品输入必须“短而结构化”，否则prompt爆炸。
+    """
+    out = []
+    # Yelp top 10
+    for b in (yelp_list or [])[:10]:
+        out.append(
+            {
+                "source": "yelp",
+                "name": b.get("name"),
+                "rating": b.get("rating"),
+                "review_count": b.get("review_count"),
+                "price": b.get("price"),
+                "distance_m": b.get("distance"),
+                "categories": [c.get("title") for c in (b.get("categories") or [])[:2]],
+            }
+        )
+    # Google top 10
+    for r in (google_list or [])[:10]:
+        out.append(
+            {
+                "source": "google",
+                "name": r.get("name"),
+                "rating": r.get("rating"),
+                "user_ratings_total": r.get("user_ratings_total"),
+                "vicinity": r.get("vicinity"),
+                "types": (r.get("types") or [])[:3],
+            }
+        )
+    # 去重（按name）
+    seen = set()
+    uniq = []
+    for x in out:
+        n = (x.get("name") or "").strip().lower()
+        if not n:
+            continue
+        if n in seen:
+            continue
+        seen.add(n)
+        uniq.append(x)
+    return uniq[:18]
+
+
+def compact_noaa_forecast(noaa: dict) -> List[dict]:
+    """
+    NOAA forecast periods -> 简化（未来3-6个时段）
+    """
+    props = (noaa or {}).get("properties") or {}
+    periods = props.get("periods") or []
+    simple = []
+    for p in periods[:6]:
+        simple.append(
+            {
+                "name": p.get("name"),
+                "temperature": p.get("temperature"),
+                "temperatureUnit": p.get("temperatureUnit"),
+                "windSpeed": p.get("windSpeed"),
+                "shortForecast": p.get("shortForecast"),
+            }
+        )
+    return simple
+
+
+def make_report_prompt(bundle: dict, lang: str = "zh") -> Tuple[str, str]:
+    place = bundle["place"]
+    name = place.get("name", "")
+    address = place.get("formatted_address", "")
+    lat, lng = bundle["lat"], bundle["lng"]
+
+    competitors = compact_competitors(bundle["yelp"].get("competitors") or [], bundle.get("competitors_google") or [])
+    noaa_simple = compact_noaa_forecast(bundle["weather"].get("noaa_forecast") or {})
+    weather_summary = bundle["weather"].get("meteostat_summary") or {}
+
+    census = bundle.get("census") or {}
+    radius_stats = bundle.get("radius_stats") or []
+
+    # 用于“样板逻辑”输出的系统提示
+    system = f"""
+你是一个“餐厅商圈与增长分析”专家顾问，输出必须像专业咨询报告：结构清晰、推理严谨、可执行。
+强制要求：
+- 必须使用并保留标签：[FACT] [INFERENCE] [ASSUMPTION] [STRATEGY]
+- 结论必须基于输入数据；没有数据就明确标注[ASSUMPTION]，不要编造具体数值。
+- 报告必须包含：1) Trade Area Intelligence（1mi/3mi） 2) 竞对与替代结构 3) 转化漏斗诊断 4) 天气/季节/交通影响 5) 30/60/90天动作清单
+- 报告语言：{"简体中文" if lang=="zh" else "English"}。标题与段落也要对应语言。
+- 字体格式：用Markdown标题/表格呈现关键矩阵；避免超长无结构段落。
+"""
+
+    # 用户提示：把数据喂给模型（短而关键）
+    user = f"""
+请为以下餐厅生成《商圈与增长分析报告》，风格对齐我提供的样板（偏“麦肯锡式”但直白可落地）。
+
+餐厅信息（来自Google Places）：
+- 门店：{name}
+- 地址：{address}
+- 坐标：{lat:.5f},{lng:.5f}
+- Google评分/评论数：{bundle["google"].get("rating")} / {bundle["google"].get("user_ratings_total")}
+- 类型：{bundle["google"].get("types")}
+- 价格等级(price_level)：{bundle["google"].get("price_level")}
+- 营业状态：{bundle["google"].get("business_status")}
+- 电话：{bundle["google"].get("phone")}
+- 网站：{bundle["google"].get("website")}
+
+Yelp（若匹配到）：
+- Yelp匹配：{(bundle["yelp"].get("match") or {}).get("name")}
+- Yelp评分/评论数：{(bundle["yelp"].get("details") or {}).get("rating")} / {(bundle["yelp"].get("details") or {}).get("review_count")}
+- Yelp价位：{(bundle["yelp"].get("details") or {}).get("price")}
+- Yelp类别：{[(c.get("title")) for c in ((bundle["yelp"].get("details") or {}).get("categories") or [])[:4]]}
+- Yelp近3条评论摘录（如有）：
+{[(r.get("text") or "")[:180] for r in ((bundle["yelp"].get("reviews") or {}).get("reviews") or [])[:3]]}
+
+人口与消费能力（Census ACS + TIGER，可能为近似）：
+- tract：{census.get("tract_name")} (state_fips={census.get("state_fips")}, county_fips={census.get("county_fips")}, tract={census.get("tract")})
+- tract人口：{census.get("tract_pop")}
+- 家庭户数：{census.get("households")}
+- 家庭收入中位数（USD，可能为空）：{census.get("median_household_income")}
+- 族裔比例（%）：White={census.get("pct_white")}, Asian={census.get("pct_asian")}, Hispanic={census.get("pct_hispanic")}
+- 1mi/3mi 半径人口估算（基于密度近似，不是精确环统计）：
+{radius_stats}
+
+步行/交通（可选WalkScore）：
+{bundle.get("walkscore")}
+
+天气（NOAA预测 + Meteostat历史365天汇总）：
+- NOAA未来预测（简化6条）：
+{noaa_simple}
+- Meteostat历史汇总（365天）：
+{weather_summary}
+解释提示：Meteostat温度为摄氏，prcp为毫米。
+
+竞对池（Yelp/Google周边检索合并去重，最多18条）：
+{competitors}
+
+必须输出的关键结构（严格遵守）：
+一、商圈人口与消费能力模型（Trade Area Intelligence）
+- 1mi/3mi：人口、收入、族裔（如果缺字段，给区间[ASSUMPTION]并解释为何）
+- 给出“潜在订单容量模型”的可计算公式，并用你给的数据/假设算出区间
+
+二、竞对与替代性结构分析
+- 竞对定义：抢同一顿饭预算/同一场景
+- 分A/B/C类（直接/替代/体验大店或目的地）
+- 至少挑3-6个竞对写“为什么会抢单 + DT如何反制”的结构
+- 输出一个量化矩阵表（评分/评数/心智/场景/反制点）
+
+三、转化漏斗诊断模型
+- 订单 = 曝光 × CTR × CVR × 复购率
+- 给行业健康值区间，并结合本店线上信任信号（评分/评数/评论内容）推断断点
+- 断点必须落到“可操作动作”
+
+四、天气/季节/交通影响
+- 用Meteostat雨天/高温/低温天数来论证季节性
+- 给“雨天外卖提升”之类结论必须标[ASSUMPTION]，并给合理区间
+- 给出可执行的运营动作（菜单/配送/时段定价/促销）
+
+五、30/60/90天行动清单（必须量化KPI）
+- 每条动作：目标指标、预期影响路径、执行成本等级（低/中/高）
+- 目标要写得像内部决策会使用的版本
+
+输出必须是Markdown（可直接导出PDF），不要输出代码。
+"""
+
+    return system.strip(), user.strip()
+
+
+# -----------------------------
+# PDF export
+# -----------------------------
+def markdown_to_pdf_bytes(markdown_text: str, title: str = "Report") -> bytes:
+    """
+    优先：weasyprint（更漂亮）
+    兜底：reportlab（保证能导出）
+    """
+    # Try WeasyPrint
+    try:
+        import markdown2
+        from weasyprint import HTML, CSS
+
+        html_body = markdown2.markdown(markdown_text, extras=["tables", "fenced-code-blocks"])
+        html = f"""
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <style>
+              body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif; line-height: 1.35; }}
+              h1, h2, h3 {{ margin: 0.6em 0 0.3em; }}
+              table {{ border-collapse: collapse; width: 100%; margin: 0.6em 0; }}
+              th, td {{ border: 1px solid #ddd; padding: 6px 8px; font-size: 12px; }}
+              th {{ background: #f5f5f5; }}
+              code {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }}
+              .meta {{ color: #666; font-size: 12px; }}
+            </style>
+          </head>
+          <body>
+            {html_body}
+          </body>
+        </html>
+        """
+        pdf = HTML(string=html).write_pdf(stylesheets=[CSS(string="")])
+        return pdf
+    except Exception:
+        pass
+
+    # Fallback: ReportLab simple
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.pdfgen import canvas
+
+    # Optional: load a CJK font if available in system (best effort)
+    # If you have a font file, set FONT_PATH env to it.
+    font_name = "Helvetica"
+    font_path = os.getenv("FONT_PATH", "")
+    if font_path and os.path.exists(font_path):
         try:
-            latlng = geocode_google(run["address"], google_key) if google_key else None
+            pdfmetrics.registerFont(TTFont("CustomFont", font_path))
+            font_name = "CustomFont"
         except Exception:
-            latlng = None
+            font_name = "Helvetica"
 
-        if latlng is None:
-            # fallback: not precise; purely for demo continuity
-            latlng = (38.2380, -122.0400)  # approx Suisun City
-            geo_note = "fallback"
-        else:
-            geo_note = "google"
+    import io
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter
+    c.setTitle(title)
 
-        prog.progress(25, text="Weather & Traffic…")
+    x = 50
+    y = height - 50
+    c.setFont(font_name, 10)
 
-        # 2) Weather
-        weather = None
-        temp_f, precip_mm, w_desc = 58.0, 0.0, "unknown"
-        if openweather_key:
-            try:
-                weather = weather_openweather(latlng[0], latlng[1], openweather_key)
-            except Exception:
-                weather = None
+    # naive wrap lines (Markdown shown as plain text in fallback)
+    for raw_line in markdown_text.splitlines():
+        line = raw_line.strip("\n")
+        if not line:
+            y -= 12
+            continue
+        # wrap
+        for seg in wrap_text(line, max_chars=95):
+            if y < 60:
+                c.showPage()
+                c.setFont(font_name, 10)
+                y = height - 50
+            c.drawString(x, y, seg)
+            y -= 12
 
-        if weather:
-            if weather["provider"] == "openweather_onecall":
-                cur = weather["data"].get("current", {})
-                temp_f = float(cur.get("temp", temp_f))
-                w_desc = (cur.get("weather") or [{"description":"unknown"}])[0].get("description", "unknown")
-                rain = cur.get("rain", {}).get("1h", 0.0) if isinstance(cur.get("rain", {}), dict) else 0.0
-                precip_mm = float(rain or 0.0)
-            else:
-                # forecast: take first item
-                lst = weather["data"].get("list", [])
-                if lst:
-                    first = lst[0]
-                    temp_f = float(first.get("main", {}).get("temp", temp_f))
-                    w_desc = (first.get("weather") or [{"description":"unknown"}])[0].get("description", "unknown")
-                    precip_mm = float(first.get("rain", {}).get("3h", 0.0) or 0.0)
+    c.save()
+    buffer.seek(0)
+    return buffer.read()
 
-        w_coef = weather_coefficient(temp_f, precip_mm, w_desc)
 
-        # 3) Traffic coefficient (proxy with commute risk if no API)
-        traffic = None
-        t_coef, cong = 1.0, 1.0
-        if google_key:
-            try:
-                # Use a conservative "destination" as a nearby major node (demo). In production: sample to major residential centroids.
-                traffic = distance_matrix_google(run["address"], run["address"], google_key)
-            except Exception:
-                traffic = None
+def wrap_text(s: str, max_chars: int = 90) -> List[str]:
+    out = []
+    while len(s) > max_chars:
+        out.append(s[:max_chars])
+        s = s[max_chars:]
+    out.append(s)
+    return out
 
-        if traffic and traffic.get("rows"):
-            # origin=dest => duration=0, so fallback. (In prod you'd compute to multiple points.)
-            t_coef, cong = 1.0, 1.0
-        else:
-            # Use a conservative commute proxy: assume mild congestion factor
-            cong = 1.25
-            t_coef, _ = traffic_coefficient(1.0, cong)
-
-        prog.progress(45, text="Competitors…")
-
-        # 4) Competitors (Google Places)
-        competitors = []
-        if google_key:
-            try:
-                results = places_nearby_google(latlng[0], latlng[1], int(run["assumptions"]["radius_miles_core"] * 1609.34), keyword=run["cuisine"].split("/")[0].strip(), google_key=google_key)
-                if results:
-                    for r0 in results[:20]:
-                        competitors.append({
-                            "name": r0.get("name"),
-                            "rating": r0.get("rating"),
-                            "user_ratings_total": r0.get("user_ratings_total"),
-                            "price_level": r0.get("price_level"),
-                            "vicinity": r0.get("vicinity"),
-                            "types": ", ".join((r0.get("types") or [])[:5]),
-                        })
-            except Exception:
-                competitors = []
-
-        if not competitors:
-            # fallback illustrative competitor set (demo)
-            competitors = [
-                {"name":"Hawaiian BBQ Express (nearby)", "rating":4.2, "user_ratings_total":350, "price_level":1, "vicinity":"Vacaville area", "types":"hawaiian, bbq"},
-                {"name":"L&L Hawaiian Barbecue (nearby)", "rating":4.1, "user_ratings_total":900, "price_level":1, "vicinity":"Fairfield area", "types":"hawaiian, bbq"},
-                {"name":"Korean BBQ (substitute)", "rating":4.3, "user_ratings_total":520, "price_level":2, "vicinity":"Vacaville area", "types":"korean, bbq"},
-                {"name":"Local BBQ (substitute)", "rating":4.0, "user_ratings_total":410, "price_level":2, "vicinity":"Suisun/Fairfield", "types":"bbq"},
-            ]
-
-        comp_df = pd.DataFrame(competitors)
-        # Tiering (simple demo rules)
-        def tier(row):
-            types = str(row.get("types","")).lower()
-            if "hawai" in types or "hawaiian" in types:
-                return "Direct"
-            if "bbq" in types:
-                return "Substitute"
-            return "Occasion"
-
-        comp_df["tier"] = comp_df.apply(tier, axis=1)
-        comp_df["trust_score"] = (comp_df["rating"].fillna(0) * np.log1p(comp_df["user_ratings_total"].fillna(0))).round(2)
-
-        prog.progress(60, text="Bayesian inference…")
-
-        # 5) Bayesian posteriors for CTR/CVR
-        imp = run["impressions"]
-        ctr = run["ctr"]
-        cvr = run["cvr"]
-
-        if imp is None or (ctr is None and cvr is None):
-            st.warning(t("warn_low_data"))
-
-        ctr_a, ctr_b, ctr_pseudo = beta_posterior_from_rate(imp, ctr, PRIORS.ctr_alpha, PRIORS.ctr_beta, pseudo_n=250)
-        cvr_a, cvr_b, cvr_pseudo = beta_posterior_from_rate(imp, cvr, PRIORS.cvr_alpha, PRIORS.cvr_beta, pseudo_n=120)
-
-        from scipy.stats import beta as beta_dist
-        ctr_q = beta_quantiles(ctr_a, ctr_b)
-        cvr_q = beta_quantiles(cvr_a, cvr_b)
-
-        # AOV: if provided use as point; else sample from lognormal prior
-        if run["aov"] and run["aov"] > 0:
-            aov_samples = np.full(5000, float(run["aov"]))
-        else:
-            aov_samples = np.random.lognormal(mean=PRIORS.aov_mu, sigma=PRIORS.aov_sigma, size=5000)
-
-        prog.progress(75, text="Quant forecast…")
-
-        # 6) Quant forecast samples
-        # Market demand baseline (3mi) -> potential orders in area
-        pop = run["assumptions"]["pop_3mi"]
-        pen = run["assumptions"]["delivery_pen"]
-        freq = run["assumptions"]["freq"]
-
-        base_market_orders = pop * pen * freq  # total market orders/month (all restaurants)
-        # Restaurant share: proxy using competitor trust score rank (very simplified)
-        # In production: multinomial logit choice model.
-        my_trust = 3.8 * math.log1p(200)  # placeholder; if you have Yelp/Google rating & reviews you plug in
-        total_trust = my_trust + float(comp_df["trust_score"].clip(lower=0).sum())
-        share = my_trust / total_trust if total_trust > 0 else 0.03
-        share = float(max(0.01, min(0.12, share)))  # conservative cap
-
-        # Bayesian conversion adjustment factor: compare posterior median to prior mean
-        ctr_prior_mean = PRIORS.ctr_alpha / (PRIORS.ctr_alpha + PRIORS.ctr_beta)
-        cvr_prior_mean = PRIORS.cvr_alpha / (PRIORS.cvr_alpha + PRIORS.cvr_beta)
-        adj = float((ctr_q[0.5] / ctr_prior_mean) * (cvr_q[0.5] / cvr_prior_mean))
-        adj = float(max(0.6, min(1.6, adj)))
-
-        # Sample the posterior for uncertainty
-        ctr_s = beta_dist.rvs(ctr_a, ctr_b, size=5000)
-        cvr_s = beta_dist.rvs(cvr_a, cvr_b, size=5000)
-
-        # Core predicted orders for the restaurant:
-        # market_orders * share * weather * traffic * (ctr, cvr adjustment proxy)
-        # We use ctr_s/cvr_s relative to prior means to model uncertainty.
-        orders_samples = base_market_orders * share * w_coef * t_coef * (ctr_s/ctr_prior_mean) * (cvr_s/cvr_prior_mean)
-        orders_samples = np.clip(orders_samples, 50, None)
-
-        revenue_samples = orders_samples * aov_samples
-        p10_o, p50_o, p90_o = np.percentile(orders_samples, [10, 50, 90])
-        p10_r, p50_r, p90_r = np.percentile(revenue_samples, [10, 50, 90])
-
-        # Growth probabilities vs baseline (use baseline share and priors)
-        baseline_orders = base_market_orders * share * w_coef * t_coef
-        growth = (orders_samples / max(1.0, baseline_orders)) - 1.0
-        p20 = float(np.mean(growth >= 0.20))
-        p40 = float(np.mean(growth >= 0.40))
-        p60 = float(np.mean(growth >= 0.60))
-
-        prog.progress(100, text="Done")
-
-        # -----------------------------
-        # Report rendering
-        # -----------------------------
-        left, mid, right = st.columns([1.2, 2.8, 1.3])
-
-        with left:
-            st.markdown("### TOC")
-            st.markdown(f"- {t('geo')}")
-            st.markdown(f"- {t('trade_area')}")
-            st.markdown(f"- {t('competitors')}")
-            st.markdown(f"- {t('weather_traffic')}")
-            st.markdown(f"- {t('funnel')}")
-            st.markdown(f"- {t('bayes')}")
-            st.markdown(f"- {t('quant')}")
-            st.markdown(f"- {t('plan')}")
-            st.markdown(f"- {t('abtests')}")
-            st.markdown(f"- {t('kpi')}")
-
-        with right:
-            st.markdown("### " + t("assumptions"))
-            st.json({
-                "radius_miles_core": run["assumptions"]["radius_miles_core"],
-                "pop_1mi_fallback": run["assumptions"]["pop_1mi"],
-                "pop_3mi_fallback": run["assumptions"]["pop_3mi"],
-                "median_income_fallback": run["assumptions"]["median_income"],
-                "delivery_penetration": run["assumptions"]["delivery_pen"],
-                "monthly_frequency": run["assumptions"]["freq"],
-                "weather_coef": round(w_coef, 3),
-                "traffic_coef": round(t_coef, 3),
-                "traffic_congestion_index": round(cong, 3),
-                "bayes_adj_factor": round(adj, 3),
-            })
-            st.markdown("### " + t("data_sources"))
-            sources = []
-            if google_key:
-                sources.append("Google Geocoding/Places/DistanceMatrix (if enabled)")
-            else:
-                sources.append("Geo/competitors fallback (demo)")
-            if openweather_key:
-                sources.append("OpenWeather (if enabled)")
-            else:
-                sources.append("Weather fallback (demo)")
-            if census_key:
-                sources.append("US Census ACS (not fully wired in demo ring model)")
-            else:
-                sources.append("Census fallback (demo)")
-            st.write("- " + "\n- ".join(sources))
-
-        with mid:
-            st.markdown(f"## {run['name']}")
-            st.caption(run["address"])
-            st.markdown(f"**{t('cuisine')}**: {run['cuisine']}  \n**Platforms**: {', '.join(run['platforms']) if run['platforms'] else '-'}")
-
-            st.markdown("---")
-            st.markdown(f"### {t('geo')}")
-            st.write(f"{t('latlng')}: `{latlng[0]:.5f}, {latlng[1]:.5f}`  ({geo_note})")
-
-            st.markdown(f"### {t('trade_area')}")
-            st.write(f"- 1mi Population (fallback): **{run['assumptions']['pop_1mi']:,}**")
-            st.write(f"- 3mi Population (fallback): **{run['assumptions']['pop_3mi']:,}**")
-            st.write(f"- Median income (fallback): **${run['assumptions']['median_income']:,}**")
-
-            st.markdown(f"### {t('competitors')}")
-            st.dataframe(comp_df.sort_values(["tier","trust_score"], ascending=[True, False]).reset_index(drop=True), use_container_width=True, height=280)
-
-            st.markdown(f"### {t('weather_traffic')}")
-            wt1, wt2, wt3 = st.columns(3)
-            with wt1:
-                st.metric("Temp (F)", f"{temp_f:.1f}")
-            with wt2:
-                st.metric("Precip (mm)", f"{precip_mm:.2f}")
-            with wt3:
-                st.metric("Weather coef", f"{w_coef:.2f}")
-            st.write(f"- Traffic congestion index (proxy): **{cong:.2f}x**")
-            st.write(f"- Traffic coefficient: **{t_coef:.2f}**")
-
-            st.markdown(f"### {t('funnel')}")
-            # Funnel: if user provided metrics, compute rough funnel counts
-            if run["impressions"] and run["ctr"] and run["cvr"]:
-                clicks = run["impressions"] * run["ctr"]
-                orders = clicks * run["cvr"]
-                funnel_df = pd.DataFrame({
-                    "Stage": ["Impressions", "Clicks", "Orders"],
-                    "Value": [run["impressions"], int(clicks), int(orders)]
-                })
-            else:
-                funnel_df = pd.DataFrame({
-                    "Stage": ["Impressions", "Clicks", "Orders"],
-                    "Value": [10000, int(10000 * ctr_q[0.5]), int(10000 * ctr_q[0.5] * cvr_q[0.5])]
-                })
-            st.dataframe(funnel_df, use_container_width=True, height=160)
-
-            st.markdown(f"### {t('bayes')}")
-            st.write("**CTR posterior (P10/P50/P90)**:", f"{ctr_q[0.1]*100:.1f}% / {ctr_q[0.5]*100:.1f}% / {ctr_q[0.9]*100:.1f}%")
-            st.write("**CVR posterior (P10/P50/P90)**:", f"{cvr_q[0.1]*100:.1f}% / {cvr_q[0.5]*100:.1f}% / {cvr_q[0.9]*100:.1f}%")
-            st.write(f"Posterior notes: CTR used pseudo trials = {ctr_pseudo}, CVR used pseudo trials = {cvr_pseudo}")
-
-            st.markdown(f"### {t('quant')}")
-            c1, c2 = st.columns(2)
-            with c1:
-                st.metric("Predicted Orders / month (P10)", f"{p10_o:,.0f}")
-                st.metric("Predicted Orders / month (P50)", f"{p50_o:,.0f}")
-                st.metric("Predicted Orders / month (P90)", f"{p90_o:,.0f}")
-            with c2:
-                st.metric("Revenue / month (P10)", f"${p10_r:,.0f}")
-                st.metric("Revenue / month (P50)", f"${p50_r:,.0f}")
-                st.metric("Revenue / month (P90)", f"${p90_r:,.0f}")
-
-            st.write("**Probability of hitting growth targets (vs baseline)**")
-            st.write(f"- P(growth ≥ +20%): **{p20*100:.0f}%**")
-            st.write(f"- P(growth ≥ +40%): **{p40*100:.0f}%**")
-            st.write(f"- P(growth ≥ +60%): **{p60*100:.0f}%**")
-
-            st.markdown(f"### {t('plan')}")
-            st.write("**30天（快赢）**")
-            st.write("- 重构菜单首屏：Top 3 招牌 + 2个高毛利加购（用图片强化）")
-            st.write("- 建立天气触发促销：雨/冷天推热食组合；好天气推便当/轻食")
-            st.write("- 优化履约：出餐时间承诺、打包稳定（降低差评与取消）")
-            st.write("**60天（结构优化）**")
-            st.write("- 建立复购机制：次卡/第二单券/家庭套餐订阅")
-            st.write("- 竞对对标：用“Why they win / How we counter”矩阵每周迭代")
-            st.write("**90天（规模化）**")
-            st.write("- 形成爆款 SKU 矩阵：1个引流 + 2个利润 + 1个口碑")
-            st.write("- 开启系统化A/B测试与仪表盘警报（CTR/CVR/ETA）")
-
-            st.markdown(f"### {t('abtests')}")
-            ab = pd.DataFrame([
-                {"Experiment":"Menu structure", "Hypothesis":"场景化首屏提升CTR与下单率", "A":"传统分类", "B":"3个套餐+爆款置顶", "Metric":"CTR, CVR", "Duration":"14 days"},
-                {"Experiment":"Price anchoring", "Hypothesis":"锚点提升AOV", "A":"先展示低价单品", "B":"先展示Mix/Combo", "Metric":"AOV", "Duration":"14 days"},
-                {"Experiment":"Promo mechanic", "Hypothesis":"加购折扣优于满减", "A":"满减", "B":"加购第二件折扣", "Metric":"Orders, Margin", "Duration":"21 days"},
-            ])
-            st.dataframe(ab, use_container_width=True, height=180)
-
-            st.markdown(f"### {t('kpi')}")
-            kpi = pd.DataFrame([
-                {"KPI":"Impressions", "Target":"↑", "Alert":"-20% WoW"},
-                {"KPI":"CTR", "Target":"8%–12% (industry)", "Alert":"< 6%"},
-                {"KPI":"CVR", "Target":"20%–30% (industry)", "Alert":"< 15%"},
-                {"KPI":"AOV", "Target":"$24–$32 (segment)", "Alert":"< $22"},
-                {"KPI":"ETA delay (traffic)", "Target":"< 1.25x", "Alert":"> 1.5x"},
-                {"KPI":"Negative review rate", "Target":"< 8%", "Alert":"> 12%"},
-            ])
-            st.dataframe(kpi, use_container_width=True, height=220)
 
 # -----------------------------
-# Debug tab
+# UI
 # -----------------------------
-with tab_debug:
-    st.subheader("Debug")
-    st.write("Session state:", st.session_state.get("run", {}))
-    st.write("Tips:")
-    st.write("- Add API keys to enable real geocoding / competitors / weather.")
-    st.write("- Next iteration: implement exact 1mi/3mi ring -> census tract mapping + ACS pull.")
+st.title("AuraInsight · 餐厅商圈与增长分析报告生成器")
+st.caption("输入地址/店名 → 选中正确商家 → 拉取公开数据 → 生成深度分析报告（支持中英 & PDF导出）")
+
+with st.sidebar:
+    st.header("设置")
+    lang = st.selectbox("报告语言", ["中文", "English"], index=0)
+    lang_code = "zh" if lang == "中文" else "en"
+
+    st.subheader("API 状态")
+    st.write("Google Places:", "✅" if GOOGLE_MAPS_API_KEY else "❌")
+    st.write("Yelp:", "✅" if YELP_API_KEY else "❌")
+    st.write("OpenAI:", "✅" if OPENAI_API_KEY else "❌")
+    st.write("Census key:", "✅" if CENSUS_API_KEY else "⚠️(可选)")
+    st.write("WalkScore:", "✅" if WALKSCORE_API_KEY else "⚠️(可选)")
+    st.divider()
+    st.markdown(
+        """
+**天气数据来源**  
+- NOAA (forecast) + Meteostat (历史365天)  
+无需注册，适合做“雨天/高温/季节性”的量化分析。
+"""
+    )
+
+query = st.text_input("餐厅地址 / 店名（建议：店名 + 城市）", value="")
+colA, colB = st.columns([1, 1])
+
+if "candidates" not in st.session_state:
+    st.session_state.candidates = []
+if "selected_place_id" not in st.session_state:
+    st.session_state.selected_place_id = None
+if "report_zh" not in st.session_state:
+    st.session_state.report_zh = None
+if "report_en" not in st.session_state:
+    st.session_state.report_en = None
+if "bundle" not in st.session_state:
+    st.session_state.bundle = None
+
+
+with colA:
+    if st.button("🔎 搜索匹配商家", use_container_width=True, disabled=not query.strip()):
+        try:
+            with st.spinner("Google Places 搜索中..."):
+                cands = google_text_search(query.strip())
+            if not cands:
+                st.warning("没有找到匹配结果，请尝试更具体的输入（店名 + 城市 + 州）。")
+            st.session_state.candidates = cands
+            st.session_state.selected_place_id = None
+            st.session_state.report_zh = None
+            st.session_state.report_en = None
+            st.session_state.bundle = None
+        except Exception as e:
+            st.error(f"搜索失败：{e}")
+
+with colB:
+    clear = st.button("🧹 清空", use_container_width=True)
+    if clear:
+        st.session_state.candidates = []
+        st.session_state.selected_place_id = None
+        st.session_state.report_zh = None
+        st.session_state.report_en = None
+        st.session_state.bundle = None
+        st.rerun()
+
+# Candidate selection
+if st.session_state.candidates:
+    st.subheader("选择正确的商家（确认后再开始分析）")
+    labels = []
+    for i, c in enumerate(st.session_state.candidates):
+        labels.append(
+            f"{i+1}. {c.name} | {c.address} | ⭐{c.rating or 'NA'} ({c.user_ratings_total or 'NA'})"
+        )
+    idx = st.selectbox("匹配结果", list(range(len(labels))), format_func=lambda i: labels[i])
+    chosen = st.session_state.candidates[idx]
+    st.session_state.selected_place_id = chosen.place_id
+
+    st.info(f"已选择：**{chosen.name}**  —  {chosen.address}")
+
+    # Show quick map
+    try:
+        st.map(pd.DataFrame([{"lat": chosen.lat, "lon": chosen.lng}]).rename(columns={"lon": "lon"}))
+    except Exception:
+        pass
+
+    # Generate report
+    if st.button("🚀 开始分析并生成报告", type="primary", use_container_width=True):
+        if not OPENAI_API_KEY:
+            st.error("缺少 OPENAI_API_KEY，无法生成报告。")
+        else:
+            try:
+                with st.spinner("拉取数据中（人口/竞品/天气）..."):
+                    place = google_place_details(chosen.place_id)
+                    bundle = build_data_bundle(place)
+                    st.session_state.bundle = bundle
+
+                with st.spinner("调用模型生成报告（长文）..."):
+                    sys_prompt, user_prompt = make_report_prompt(bundle, lang="zh")  # 先生成中文基稿最稳
+                    report_zh = openai_chat(sys_prompt, user_prompt, temperature=0.25, max_tokens=3500)
+                    st.session_state.report_zh = report_zh
+
+                # 若用户想英文：用翻译（更稳定，不会跑格式）
+                if lang_code == "en":
+                    with st.spinner("翻译成英文..."):
+                        st.session_state.report_en = translate_text(report_zh, "en")
+
+                st.success("报告生成完成。")
+            except Exception as e:
+                st.error(f"生成失败：{e}")
+
+# Display report
+report_to_show = None
+if lang_code == "zh" and st.session_state.report_zh:
+    report_to_show = st.session_state.report_zh
+elif lang_code == "en":
+    if st.session_state.report_en:
+        report_to_show = st.session_state.report_en
+    elif st.session_state.report_zh:
+        # 还没翻译就现场翻译
+        try:
+            with st.spinner("翻译成英文..."):
+                st.session_state.report_en = translate_text(st.session_state.report_zh, "en")
+            report_to_show = st.session_state.report_en
+        except Exception as e:
+            st.error(f"翻译失败：{e}")
+            report_to_show = st.session_state.report_zh
+
+if report_to_show:
+    st.divider()
+    st.subheader("生成的报告（可直接导出PDF）")
+    st.markdown(report_to_show)
+
+    # Download PDF
+    try:
+        place_name = ""
+        if st.session_state.bundle and st.session_state.bundle.get("place"):
+            place_name = st.session_state.bundle["place"].get("name") or "Restaurant"
+        file_name = f"{place_name}_TradeArea_Growth_Report_{lang_code}.pdf".replace(" ", "_")
+        pdf_bytes = markdown_to_pdf_bytes(report_to_show, title=file_name)
+        st.download_button(
+            "⬇️ 下载 PDF",
+            data=pdf_bytes,
+            file_name=file_name,
+            mime="application/pdf",
+            use_container_width=True,
+        )
+    except Exception as e:
+        st.warning(f"PDF导出失败（可先复制Markdown）：{e}")
+
+# Debug panel (optional)
+with st.expander("（可选）查看原始数据包/调试", expanded=False):
+    st.write("bundle keys:", list((st.session_state.bundle or {}).keys()))
+    st.json(st.session_state.bundle or {})
