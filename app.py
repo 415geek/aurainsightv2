@@ -291,7 +291,7 @@ if address_input:
                     yelp_count = data['yelp'][0]['review_count'] if data['yelp'] else 0
                     st.error(f"**Yelp 评分**: {yelp_rating} ({yelp_count} 条)")
                 with col3:
-                    st.success(f"**人口概况**: {data['census']['population_est']}")
+                    st.success(f"**商圈人口 (3英里)**: {data['census']['population_est']}")
 
                 with st.expander("查看详细原始数据"):
                     st.json(data)
