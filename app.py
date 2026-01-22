@@ -312,9 +312,35 @@ if address_input:
                 
                 with col_btn:
                     if st.button("🔍 生成深度AI策略报告", type="primary"):
-                        with st.spinner("AI 顾问正在根据所有数据点生成策略报告，请稍候..."):
+                        # 初始化进度条
+                        report_progress = st.progress(0, text="正在启动 AI 引擎...")
+                        
+                        try:
+                            # 阶段 1: 准备上下文
+                            report_progress.progress(20, text="正在整合商家数据与商圈信息...")
+                            # 模拟一点处理时间，让用户看清提示
+                            import time
+                            time.sleep(0.5) 
+                            
+                            # 阶段 2: 构建 Prompt
+                            report_progress.progress(40, text="正在构建高维分析模型...")
+                            
+                            # 阶段 3: 调用 API (这是最耗时的部分)
+                            report_progress.progress(60, text="AI 顾问正在生成策略报告 (这可能需要 30-60 秒)...")
+                            
+                            # 这里的调用是同步的，会阻塞直到返回
                             report = generate_report(data, lang)
+                            
+                            # 阶段 4: 处理响应
+                            report_progress.progress(90, text="正在格式化报告内容...")
                             st.session_state.report_content = report
+                            
+                            # 完成
+                            report_progress.progress(100, text="报告生成完毕！")
+                            
+                        except Exception as e:
+                            report_progress.empty()
+                            st.error(f"报告生成失败: {str(e)}")
             
             # 5. 可编辑报告与导出
             if "report_content" in st.session_state and st.session_state.current_place_id == place["place_id"]:
