@@ -72,6 +72,28 @@ def google_search(query):
     except Exception as e:
         return [{"error": f"Request failed: {str(e)}"}]
 
+# ============================
+# YELP
+# ============================
+def yelp_match(name, lat, lng):
+    if not YELP_API_KEY:
+        st.error("Yelp API Key is missing.")
+        return []
+    
+    url = "https://api.yelp.com/v3/businesses/search"
+    headers = {"Authorization": f"Bearer {YELP_API_KEY}"}
+    params = {"term": name, "latitude": lat, "longitude": lng, "limit": 3}
+    try:
+        response = requests.get(url, headers=headers, params=params)
+        if response.status_code == 200:
+            return response.json().get("businesses", [])
+        else:
+            st.warning(f"Yelp API returned status: {response.status_code}")
+            return []
+    except Exception as e:
+        st.warning(f"Yelp API call failed: {str(e)}")
+        return []
+
 # ... (中间代码保持不变) ...
 
 # ============================
