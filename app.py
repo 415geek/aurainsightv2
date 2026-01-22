@@ -7,13 +7,7 @@ from datetime import datetime, timedelta
 import requests
 import pandas as pd
 from PyPDF2 import PdfReader
-
-try:
-    from meteostat import Point, Daily
-except:
-    from meteostat import Point
-    from meteostat.series import Daily
-
+from meteostat import Point, Daily
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 import openai
