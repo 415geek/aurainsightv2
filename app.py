@@ -148,35 +148,41 @@ city = st.text_input("输入城市")
 if restaurant_name and city:
     query = f"{restaurant_name} in {city}"
     results = google_search(query)
-    options = [f"{r['name']} | {r['formatted_address']}" for r in results]
-    idx = st.selectbox("选择匹配餐厅", range(len(options)), format_func=lambda i: options[i])
-    place = results[idx]
+    
+    if not results:
+        st.warning("未找到匹配的餐厅，请尝试其他名称或城市。")
+    else:
+        options = [f"{r['name']} | {r['formatted_address']}" for r in results]
+        idx = st.selectbox("选择匹配餐厅", range(len(options)), format_func=lambda i: options[i])
+        
+        if idx is not None:
+            place = results[idx]
 
-    lat = place["geometry"]["location"]["lat"]
-    lng = place["geometry"]["location"]["lng"]
+            lat = place["geometry"]["location"]["lat"]
+            lng = place["geometry"]["location"]["lng"]
 
-    if st.button("开始分析"):
-        with st.spinner("拉取数据中..."):
+            if st.button("开始分析"):
+                with st.spinner("拉取数据中..."):
 
-            yelp = yelp_match(place["name"], lat, lng)
-            weather_hist = get_weather(lat, lng)
-            noaa = noaa_forecast(lat, lng)
-            census = census_data(lat, lng)
+                    yelp = yelp_match(place["name"], lat, lng)
+                    weather_hist = get_weather(lat, lng)
+                    noaa = noaa_forecast(lat, lng)
+                    census = census_data(lat, lng)
 
-            data = {
-                "place": place,
-                "yelp": yelp,
-                "weather_history": weather_hist.tail(10).to_dict(),
-                "noaa_forecast": noaa,
-                "census": census
-            }
+                    data = {
+                        "place": place,
+                        "yelp": yelp,
+                        "weather_history": weather_hist.tail(10).to_dict(),
+                        "noaa_forecast": noaa,
+                        "census": census
+                    }
 
-            lang = st.selectbox("输出语言", ["zh", "en"])
-            report = generate_report(data, lang)
+                    lang = st.selectbox("输出语言", ["zh", "en"])
+                    report = generate_report(data, lang)
 
-            st.subheader("分析报告")
-            st.text_area("Report", report, height=500)
+                    st.subheader("分析报告")
+                    st.text_area("Report", report, height=500)
 
-            if st.button("导出PDF"):
-                export_pdf(report, "analysis_report.pdf")
-                st.success("PDF 已生成：analysis_report.pdf")
+                    if st.button("导出PDF"):
+                        export_pdf(report, "analysis_report.pdf")
+                        st.success("PDF 已生成：analysis_report.pdf")
