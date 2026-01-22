@@ -125,7 +125,9 @@ address_input = st.text_input("请输入餐厅地址", placeholder="例如：240
 if address_input:
     # 搜索逻辑
     if "last_query" not in st.session_state or st.session_state.last_query != address_input:
-        st.session_state.search_results = google_search(address_input)
+        # 自动追加 "restaurant" 以确保搜索的是商家而不是纯地址
+        search_query = f"{address_input} restaurant"
+        st.session_state.search_results = google_search(search_query)
         st.session_state.last_query = address_input
     
     results = st.session_state.get("search_results", [])
