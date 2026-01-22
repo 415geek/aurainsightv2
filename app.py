@@ -6,6 +6,25 @@ import streamlit as st
 from datetime import datetime, timedelta
 import requests
 import pandas as pd
+import nltk
+
+# Ensure TextBlob corpora are downloaded
+try:
+    nltk.data.find('tokenizers/punkt')
+except LookupError:
+    nltk.download('punkt')
+try:
+    nltk.data.find('taggers/averaged_perceptron_tagger')
+except LookupError:
+    nltk.download('averaged_perceptron_tagger')
+try:
+    nltk.data.find('corpora/brown')
+except LookupError:
+    nltk.download('brown')
+try:
+    nltk.data.find('corpora/wordnet')
+except LookupError:
+    nltk.download('wordnet')
 
 from meteostat import Point, Daily
 from reportlab.lib.pagesizes import letter
