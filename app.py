@@ -38,6 +38,9 @@ except Exception as e:
 # PDF STYLE LOADER
 # ============================
 def load_pdf_text(path):
+    if not os.path.exists(path):
+        st.warning(f"Warning: PDF style file not found: {path}. Skipping.")
+        return ""
     reader = PdfReader(path)
     text = ""
     for p in reader.pages:
