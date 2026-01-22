@@ -38,7 +38,96 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from openai import OpenAI
 from textblob import TextBlob
+import concurrent.futures
+import re
+import io
 
+# ============================
+# FEATURE FLAGS & CONFIG
+# ============================
+ENABLE_DATA_UPLOAD_PIPELINE = os.getenv("ENABLE_DATA_UPLOAD_PIPELINE", "true").lower() == "true"
+AURAINSIGHT_MODEL = os.getenv("AURAINSIGHT_MODEL", "gpt-4o")
+
+# ============================
+# DATA PIPELINE (CANONICAL SCHEMA)
+# ============================
+class DataPipeline:
+    COLUMN_MAP = {
+        '日期': 'date', 'date': 'date', '时间': 'date',
+        '订单量': 'orders', '单量': 'orders', 'orders': 'orders', 'order_count': 'orders',
+        '营收': 'revenue', '实收': 'revenue', 'revenue': 'revenue', 'sales': 'revenue', '金额': 'revenue',
+        '客单价': 'aov', 'aov': 'aov', '平均单价': 'aov',
+        '取消率': 'cancel_rate', '退单率': 'cancel_rate', 'cancel_rate': 'cancel_rate',
+        '备餐时间': 'prep_time', 'prep_time': 'prep_time',
+        '渠道': 'channel', '来源': 'channel', 'channel': 'channel'
+    }
+
+    @staticmethod
+    def clean_numeric(val):
+        if pd.isna(val): return 0
+        if isinstance(val, (int, float)): return val
+        # 去除货币符号、千分位、百分号
+        clean_val = re.sub(r'[^\d\.]', '', str(val))
+        try:
+            return float(clean_val)
+        except:
+            return 0
+
+    @classmethod
+    def parse_file(cls, uploaded_file):
+        fname = uploaded_file.name
+        ext = fname.split('.')[-1].lower()
+        df = pd.DataFrame()
+        
+        try:
+            if ext in ['csv']:
+                df = pd.read_csv(uploaded_file)
+            elif ext in ['xlsx', 'xls']:
+                df = pd.read_excel(uploaded_file)
+            elif ext in ['txt']:
+                content = uploaded_file.read().decode("utf-8")
+                return {"type": "text", "content": content, "source": fname}
+            else:
+                return {"error": f"暂不支持格式: {ext}"}
+            
+            # 基础清洗：映射列名
+            df = df.rename(columns=lambda x: cls.COLUMN_MAP.get(str(x).lower().strip(), x))
+            
+            # 数据质量检查
+            quality = {
+                "missing_cols": [c for c in ['date', 'orders', 'revenue'] if c not in df.columns],
+                "rows": len(df),
+                "source": fname
+            }
+            
+            return {"type": "table", "data": df, "quality": quality, "source": fname}
+        except Exception as e:
+            return {"error": f"解析失败 ({fname}): {str(e)}"}
+
+    @classmethod
+    def process_bundle(cls, files):
+        bundle = {"verified": {}, "derived": {}, "assumed": {}, "traceability": []}
+        all_dfs = []
+        
+        for f in files:
+            res = cls.parse_file(f)
+            if "error" in res:
+                st.error(res["error"])
+                continue
+            if res["type"] == "table":
+                df = res["data"]
+                all_dfs.append(df)
+                for col in df.columns:
+                    if col in cls.COLUMN_MAP.values():
+                        bundle["verified"][col] = True
+                        bundle["traceability"].append({"field": col, "source": res["source"], "tag": "VERIFIED_DATA"})
+
+        # 推导数据
+        if "revenue" in bundle["verified"] and "orders" in bundle["verified"]:
+            bundle["derived"]["aov"] = True
+            bundle["traceability"].append({"field": "aov", "source": "Logic Calculation", "tag": "DERIVED_DATA"})
+            
+        return bundle, all_dfs
 
 # ============================
 # CONFIG
@@ -280,21 +369,48 @@ def json_serial(obj):
         return obj.isoformat()
     raise TypeError(f"Type {type(obj)} not serializable")
 
-def generate_report(data, lang="zh"):
+def generate_report(data, lang="zh", operational_data=None):
     client = OpenAI(api_key=OPENAI_API_KEY)
 
     # 准备变量
     restaurant_name = data.get("place", {}).get("name", "Unknown Restaurant")
     restaurant_address = data.get("place", {}).get("formatted_address", "Unknown Address")
-    # 使用自定义序列化函数处理日期时间对象
-    input_data_str = json.dumps(data, ensure_ascii=False, indent=2, default=json_serial)
     
-    # 注入语言指令，确保 AI 即使在模板没有语言变量的情况下也能识别需求
-    lang_instruction = "\n\nIMPORTANT: The user has requested the report to be generated in Chinese (zh)." if lang == "zh" else "\n\nIMPORTANT: The user has requested the report to be generated in English (en)."
-    input_data_with_lang = input_data_str + lang_instruction
+    # 构建 Payload
+    payload = {
+        "restaurant_profile": data.get("place"),
+        "reviews": {
+            "google": data.get("google_reviews"),
+            "yelp": data.get("yelp_reviews"),
+            "sentiment": data.get("sentiment")
+        },
+        "weather": {
+            "history": data.get("weather_history"),
+            "forecast": data.get("noaa_forecast")
+        },
+        "census": data.get("census"),
+        "operational_data": operational_data if operational_data else "MISSING - USE INDUSTRY ASSUMPTIONS"
+    }
+    
+    input_data_str = json.dumps(payload, ensure_ascii=False, indent=2, default=json_serial)
+    
+    # 注入强制性指令 (Master Prompt v1.1 Logic)
+    system_instruction = f"""
+    You are AuraInsight v1.1 Master Engine. 
+    Output Model: {AURAINSIGHT_MODEL}
+    
+    MANDATORY RULES:
+    1. If 'operational_data' contains VERIFIED/DERIVED values, you MUST override all assumed priors.
+    2. Every quantitative conclusion MUST be tagged with [VERIFIED], [DERIVED], or [ASSUMPTION].
+    3. Include a 'Data Traceability Audit' table at the end of the report.
+    4. Provide P10/P50/P90 for all forecasts.
+    5. Language: {"Chinese" if lang == "zh" else "English"}.
+    """
+    
+    input_data_with_lang = input_data_str + f"\n\n[SYSTEM_DIRECTIVE]: {system_instruction}"
 
     try:
-        # 1. 创建响应任务
+        # 使用 Prompt Template ID
         response = client.responses.create(
             prompt={
                 "id": "pmpt_6971b3bd094081959997af7730098d45020d02ec1efab62b",
@@ -587,22 +703,83 @@ if address_input:
             
             # 5. 可编辑报告与导出
             if "report_content" in st.session_state and st.session_state.current_place_id == place["place_id"]:
+                st.divider()
                 st.subheader("📝 深度分析报告 (可编辑)")
                 
-                # 用户可以在这里修改报告，修改后的内容会被返回给 user_edited_report
+                # 用户可以在这里修改报告
                 user_edited_report = st.text_area(
                     "您可以直接修改下方的报告内容，修改后点击下载即可。",
                     value=st.session_state.report_content,
-                    height=600
+                    height=500,
+                    key="report_area"
                 )
                 
-                if st.button("📥 导出 PDF 分析报告"):
-                    export_pdf(user_edited_report, "analysis_report.pdf")
-                    with open("analysis_report.pdf", "rb") as pdf_file:
-                        st.download_button(
-                            label="点击下载 PDF",
-                            data=pdf_file,
-                            file_name="AuraInsight_Report.pdf",
-                            mime="application/pdf"
-                        )
-                    st.success("PDF 已生成并准备下载！")
+                # 导出按钮
+                col_exp1, col_exp2 = st.columns([1, 1])
+                with col_exp1:
+                    if st.button("📥 导出 PDF 分析报告"):
+                        export_pdf(user_edited_report, "analysis_report.pdf")
+                        with open("analysis_report.pdf", "rb") as pdf_file:
+                            st.download_button(
+                                label="点击下载 PDF",
+                                data=pdf_file,
+                                file_name="AuraInsight_Report.pdf",
+                                mime="application/pdf"
+                            )
+                        st.success("PDF 已生成！")
+
+                # ============================
+                # 阶段 1.2: 补充数据上传区域 (闭环核心)
+                # ============================
+                if ENABLE_DATA_UPLOAD_PIPELINE:
+                    st.divider()
+                    st.markdown("### 📊 补充运营数据（数据闭环）")
+                    st.info("💡 上传真实数据（POS/外卖平台导出）后，AI 将重新清洗并校准模型结论，提供更高精度的报告。")
+                    
+                    uploaded_files = st.file_uploader(
+                        "支持 CSV, XLSX, TXT (支持多文件同时上传)", 
+                        accept_multiple_files=True,
+                        type=['csv', 'xlsx', 'xls', 'txt']
+                    )
+                    
+                    if uploaded_files:
+                        bundle, dfs = DataPipeline.process_bundle(uploaded_files)
+                        
+                        # 三块可视化：已识别、缺失、假设
+                        v_col1, v_col2, v_col3 = st.columns(3)
+                        with v_col1:
+                            st.success("**已识别字段**")
+                            for f in bundle["verified"].keys(): st.write(f"✅ {f}")
+                        with v_col2:
+                            st.warning("**缺失字段**")
+                            all_needed = ['orders', 'revenue', 'aov', 'cancel_rate', 'prep_time']
+                            missing = [f for f in all_needed if f not in bundle["verified"] and f not in bundle["derived"]]
+                            for f in missing: st.write(f"❓ {f}")
+                        with v_col3:
+                            st.info("**将采用的模型假设**")
+                            for f in missing: st.write(f"🔮 {f} (Industry Prior)")
+                        
+                        # 按钮逻辑
+                        c_btn1, c_btn2 = st.columns(2)
+                        with c_btn1:
+                            if st.button("🔍 解析并预览数据内容"):
+                                for d in dfs: st.dataframe(d.head(5))
+                                
+                        with c_btn2:
+                            if st.button("🔄 使用上传数据重新生成报告", type="primary"):
+                                with st.progress(0, text="正在启动数据增强管线..."):
+                                    # 构造上传数据的分析 schema
+                                    op_data = {
+                                        "traceability": bundle["traceability"],
+                                        "sample_metrics": bundle["verified"]
+                                    }
+                                    new_report = generate_report(data, lang, operational_data=op_data)
+                                    st.session_state.report_content = new_report
+                                    st.rerun()
+
+                    # Admin 回滚开关 (隐藏)
+                    if st.toggle("Admin: 使用旧模型版本 (Rollback Mode)", value=False):
+                        st.session_state.use_legacy_model = True
+                    else:
+                        st.session_state.use_legacy_model = False
+
