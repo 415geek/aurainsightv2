@@ -161,6 +161,20 @@ def get_yelp_reviews(business_id):
     except Exception:
         return []
 
+def get_yelp_details(business_id):
+    if not YELP_API_KEY:
+        return {}
+    
+    url = f"https://api.yelp.com/v3/businesses/{business_id}"
+    headers = {"Authorization": f"Bearer {YELP_API_KEY}"}
+    try:
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            return response.json()
+        return {}
+    except Exception:
+        return {}
+
 def analyze_sentiment(reviews):
     if not reviews:
         return {"score": 0, "label": "No Data", "keywords": []}
@@ -400,11 +414,14 @@ if address_input:
                     except Exception:
                         pass
 
-                    # 获取 Yelp 评论
+                    # 获取 Yelp 评论与详情
+                    yelp_details = {}
                     if yelp_data:
                         try:
                             first_biz_id = yelp_data[0]['id']
                             yelp_reviews = get_yelp_reviews(first_biz_id)
+                            # 获取商家详情以拉取更多图片
+                            yelp_details = get_yelp_details(first_biz_id)
                         except Exception:
                             pass
                     
@@ -426,6 +443,7 @@ if address_input:
                     st.session_state.fetched_data = {
                         "place": place,
                         "yelp": yelp_data,
+                        "yelp_details": yelp_details,
                         "yelp_reviews": yelp_reviews,
                         "google_reviews": google_reviews,
                         "sentiment": sentiment_result,
@@ -452,14 +470,28 @@ if address_input:
                 st.divider()
                 st.subheader("📊 商家数据概要")
                 
-                # Photos
+                # Photos Gallery
+                all_photo_urls = []
+                
+                # Google Photos (Up to 6)
                 if "photos" in place:
-                    p_cols = st.columns(min(3, len(place["photos"])))
-                    for i, photo in enumerate(place["photos"][:3]):
-                        url = get_google_photo_url(photo.get("photo_reference"))
+                    for photo in place["photos"][:6]:
+                        url = get_google_photo_url(photo.get("photo_reference"), max_width=800)
                         if url:
-                            with p_cols[i]:
-                                st.image(url, use_column_width=True)
+                            all_photo_urls.append(("Google", url))
+                
+                # Yelp Photos
+                if data.get("yelp_details") and "photos" in data["yelp_details"]:
+                    for url in data["yelp_details"]["photos"]:
+                        all_photo_urls.append(("Yelp", url))
+                
+                if all_photo_urls:
+                    st.markdown("#### 📸 门店实景与菜品预览")
+                    # 使用 3 列网格展示图片
+                    cols = st.columns(3)
+                    for i, (source, url) in enumerate(all_photo_urls):
+                        with cols[i % 3]:
+                            st.image(url, caption=f"来源: {source}", use_column_width=True)
                                 
                 col1, col2, col3 = st.columns(3)
                 with col1:
