@@ -43,91 +43,117 @@ import re
 import io
 
 # ============================
-# FEATURE FLAGS & CONFIG
+# FEATURE FLAGS & CONFIG (v2.1)
 # ============================
 ENABLE_DATA_UPLOAD_PIPELINE = os.getenv("ENABLE_DATA_UPLOAD_PIPELINE", "true").lower() == "true"
-AURAINSIGHT_MODEL = os.getenv("AURAINSIGHT_MODEL", "gpt-4o")
+# 模式：prompt_bound (使用 OpenAI 后台绑定的模型) | explicit_model (显式指定 ID)
+AURAINSIGHT_MODEL_MODE = os.getenv("AURAINSIGHT_MODEL_MODE", "prompt_bound")
+AURAINSIGHT_MODEL_ID = os.getenv("AURAINSIGHT_MODEL_ID", "gpt-4o")
+AURAINSIGHT_PROMPT_ID = os.getenv("AURAINSIGHT_PROMPT_ID", "pmpt_6971b3bd094081959997af7730098d45020d02ec1efab62b")
 
 # ============================
-# DATA PIPELINE (CANONICAL SCHEMA)
+# DATA PIPELINE (CANONICAL SCHEMA v2.1)
 # ============================
 class DataPipeline:
     COLUMN_MAP = {
-        '日期': 'date', 'date': 'date', '时间': 'date',
+        '日期': 'date', 'date': 'date', '时间': 'date', 'day': 'date',
         '订单量': 'orders', '单量': 'orders', 'orders': 'orders', 'order_count': 'orders',
         '营收': 'revenue', '实收': 'revenue', 'revenue': 'revenue', 'sales': 'revenue', '金额': 'revenue',
-        '客单价': 'aov', 'aov': 'aov', '平均单价': 'aov',
-        '取消率': 'cancel_rate', '退单率': 'cancel_rate', 'cancel_rate': 'cancel_rate',
-        '备餐时间': 'prep_time', 'prep_time': 'prep_time',
-        '渠道': 'channel', '来源': 'channel', 'channel': 'channel'
+        '渠道': 'channel', '来源': 'channel', 'channel': 'channel', 'platform': 'channel',
+        '取消率': 'cancel_rate', '退单率': 'cancel_rate',
+        '备餐时间': 'prep_time', '出餐时间': 'prep_time'
     }
-
-    @staticmethod
-    def clean_numeric(val):
-        if pd.isna(val): return 0
-        if isinstance(val, (int, float)): return val
-        # 去除货币符号、千分位、百分号
-        clean_val = re.sub(r'[^\d\.]', '', str(val))
-        try:
-            return float(clean_val)
-        except:
-            return 0
 
     @classmethod
     def parse_file(cls, uploaded_file):
         fname = uploaded_file.name
         ext = fname.split('.')[-1].lower()
-        df = pd.DataFrame()
         
         try:
             if ext in ['csv']:
                 df = pd.read_csv(uploaded_file)
             elif ext in ['xlsx', 'xls']:
                 df = pd.read_excel(uploaded_file)
-            elif ext in ['txt']:
-                content = uploaded_file.read().decode("utf-8")
-                return {"type": "text", "content": content, "source": fname}
+            elif ext in ['pdf']:
+                from PyPDF2 import PdfReader
+                reader = PdfReader(uploaded_file)
+                text = "".join([p.extract_text() for p in reader.pages])
+                return {"type": "text", "content": text, "source": fname}
+            elif ext in ['docx']:
+                import docx
+                doc = docx.Document(uploaded_file)
+                text = "\n".join([p.text for p in doc.paragraphs])
+                return {"type": "text", "content": text, "source": fname}
+            elif ext in ['png', 'jpg', 'jpeg', 'webp']:
+                return {"type": "image_placeholder", "content": "OCR Pending v2.2", "source": fname}
             else:
-                return {"error": f"暂不支持格式: {ext}"}
+                return {"error": f"不支持的格式: {ext}"}
             
-            # 基础清洗：映射列名
+            # 基础列名映射
             df = df.rename(columns=lambda x: cls.COLUMN_MAP.get(str(x).lower().strip(), x))
-            
-            # 数据质量检查
-            quality = {
-                "missing_cols": [c for c in ['date', 'orders', 'revenue'] if c not in df.columns],
-                "rows": len(df),
-                "source": fname
-            }
-            
-            return {"type": "table", "data": df, "quality": quality, "source": fname}
+            return {"type": "table", "data": df, "source": fname}
         except Exception as e:
             return {"error": f"解析失败 ({fname}): {str(e)}"}
 
     @classmethod
-    def process_bundle(cls, files):
-        bundle = {"verified": {}, "derived": {}, "assumed": {}, "traceability": []}
-        all_dfs = []
+    def build_canonical_schema(cls, files):
+        operational_data = {
+            "time_series": [],
+            "channels_summary": [],
+            "data_quality_report": {"missing_fields": [], "warnings": []},
+            "traceability": []
+        }
         
+        all_dfs = []
         for f in files:
             res = cls.parse_file(f)
             if "error" in res:
-                st.error(res["error"])
+                operational_data["data_quality_report"]["warnings"].append(res["error"])
                 continue
             if res["type"] == "table":
                 df = res["data"]
-                all_dfs.append(df)
-                for col in df.columns:
-                    if col in cls.COLUMN_MAP.values():
-                        bundle["verified"][col] = True
-                        bundle["traceability"].append({"field": col, "source": res["source"], "tag": "VERIFIED_DATA"})
+                # 尝试日期标准化
+                if 'date' in df.columns:
+                    try:
+                        df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
+                    except: pass
+                
+                # 清洗数值
+                for col in ['orders', 'revenue']:
+                    if col in df.columns:
+                        df[col] = df[col].apply(cls.clean_numeric)
+                
+                all_dfs.append({"df": df, "source": res["source"]})
 
-        # 推导数据
-        if "revenue" in bundle["verified"] and "orders" in bundle["verified"]:
-            bundle["derived"]["aov"] = True
-            bundle["traceability"].append({"field": "aov", "source": "Logic Calculation", "tag": "DERIVED_DATA"})
+        if not all_dfs:
+            return operational_data
+
+        # 合并数据
+        merged = pd.concat([d["df"] for d in all_dfs], ignore_index=True)
+        
+        # 计算 AOV (DERIVED)
+        if 'revenue' in merged.columns and 'orders' in merged.columns:
+            merged['aov'] = (merged['revenue'] / merged['orders']).replace([float('inf'), -float('inf')], 0).fillna(0)
+            operational_data["traceability"].append({"field": "aov", "source": "derived: revenue/orders", "tag": "DERIVED_DATA"})
+
+        # 生成 time_series
+        if 'date' in merged.columns:
+            ts_cols = [c for c in ['date', 'channel', 'orders', 'revenue', 'aov', 'cancel_rate', 'prep_time'] if c in merged.columns]
+            operational_data["time_series"] = merged[ts_cols].to_dict('records')
             
-        return bundle, all_dfs
+        # 质量报告
+        needed = ['date', 'orders', 'revenue']
+        operational_data["data_quality_report"]["missing_fields"] = [f for f in needed if f not in merged.columns]
+        
+        return operational_data
+
+    @staticmethod
+    def clean_numeric(val):
+        if pd.isna(val): return 0
+        if isinstance(val, (int, float)): return val
+        clean_val = re.sub(r'[^\d\.]', '', str(val))
+        try: return float(clean_val)
+        except: return 0
 
 # ============================
 # CONFIG
@@ -376,52 +402,61 @@ def generate_report(data, lang="zh", operational_data=None):
     restaurant_name = data.get("place", {}).get("name", "Unknown Restaurant")
     restaurant_address = data.get("place", {}).get("formatted_address", "Unknown Address")
     
-    # 构建 Payload
+    # 构建 Payload (Canonical Schema v2.1)
     payload = {
         "restaurant_profile": data.get("place"),
-        "reviews": {
-            "google": data.get("google_reviews"),
-            "yelp": data.get("yelp_reviews"),
-            "sentiment": data.get("sentiment")
-        },
-        "weather": {
-            "history": data.get("weather_history"),
-            "forecast": data.get("noaa_forecast")
-        },
-        "census": data.get("census"),
-        "operational_data": operational_data if operational_data else "MISSING - USE INDUSTRY ASSUMPTIONS"
+        "weather": {"history": data.get("weather_history"), "forecast": data.get("noaa_forecast")},
+        "operational_data": operational_data if operational_data else "MISSING - USE INDUSTRY PRIORS",
+        "timestamp": datetime.now().isoformat()
     }
     
     input_data_str = json.dumps(payload, ensure_ascii=False, indent=2, default=json_serial)
     
-    # 注入强制性指令 (Master Prompt v1.1 Logic)
+    # 强制量化指令 (v2.1)
     system_instruction = f"""
-    You are AuraInsight v1.1 Master Engine. 
-    Output Model: {AURAINSIGHT_MODEL}
+    You are AuraInsight v2.1 (Quantitative Mode). 
     
-    MANDATORY RULES:
-    1. If 'operational_data' contains VERIFIED/DERIVED values, you MUST override all assumed priors.
-    2. Every quantitative conclusion MUST be tagged with [VERIFIED], [DERIVED], or [ASSUMPTION].
-    3. Include a 'Data Traceability Audit' table at the end of the report.
-    4. Provide P10/P50/P90 for all forecasts.
-    5. Language: {"Chinese" if lang == "zh" else "English"}.
+    MANDATORY STANDARDS:
+    1. If 'operational_data' is present, you MUST use [VERIFIED] data for all core KPIs.
+    2. Every forecast (Orders/Revenue) MUST include a P10, P50, and P90 confidence interval.
+    3. You MUST provide the specific formula used for your prediction (e.g., Bayesian Linear Regression with Weather Coefficients).
+    4. If weather history is present, calculate the correlation coefficient between rain/temp and order volume.
+    5. Output Language: {"Chinese" if lang == "zh" else "English"}.
     """
     
-    input_data_with_lang = input_data_str + f"\n\n[SYSTEM_DIRECTIVE]: {system_instruction}"
+    input_payload = input_data_str + f"\n\n[SYSTEM_DIRECTIVE]: {system_instruction}"
 
     try:
-        # 使用 Prompt Template ID
-        response = client.responses.create(
-            prompt={
-                "id": "pmpt_6971b3bd094081959997af7730098d45020d02ec1efab62b",
-                "version": "2",
-                "variables": {
-                    "restaurant_name": restaurant_name,
-                    "restaurant_address": restaurant_address,
-                    "input_data": input_data_with_lang
+        # 模型路由逻辑
+        if AURAINSIGHT_MODEL_MODE == "explicit_model":
+            # 模式 B：显式强控
+            response = client.responses.create(
+                model=AURAINSIGHT_MODEL_ID,
+                prompt={
+                    "variables": {
+                        "restaurant_name": restaurant_name,
+                        "restaurant_address": restaurant_address,
+                        "input_data": input_payload
+                    }
                 }
-            }
-        )
+            )
+            # 记录模型日志
+            st.info(f"Using Explicit Model: {AURAINSIGHT_MODEL_ID}")
+        else:
+            # 模式 A：Prompt 绑定 (默认)
+            response = client.responses.create(
+                prompt={
+                    "id": AURAINSIGHT_PROMPT_ID,
+                    "version": "2",
+                    "variables": {
+                        "restaurant_name": restaurant_name,
+                        "restaurant_address": restaurant_address,
+                        "input_data": input_payload
+                    }
+                }
+            )
+            st.info("Using Prompt-Bound Model Mapping")
+
         
         # 2. 轮询状态，直到完成 (OpenAI Responses API 是异步的)
         import time
@@ -480,7 +515,18 @@ def generate_report(data, lang="zh", operational_data=None):
 # ============================
 # STREAMLIT UI
 # ============================
-st.title("AuraInsight · 商圈与增长分析系统")
+st.set_page_config(page_title="AuraInsight v2.1", layout="wide")
+
+# Sidebar Monitoring
+with st.sidebar:
+    st.image("https://maps.gstatic.com/mapfiles/place_api/icons/v1/png_71/restaurant-71.png", width=50)
+    st.title("System Status")
+    st.caption(f"Model Mode: {AURAINSIGHT_MODEL_MODE}")
+    st.caption(f"Pipeline: {'Enabled' if ENABLE_DATA_UPLOAD_PIPELINE else 'Disabled'}")
+    if st.toggle("Debug Info"):
+        st.json({"model_id": AURAINSIGHT_MODEL_ID, "prompt_id": AURAINSIGHT_PROMPT_ID})
+
+st.title("AuraInsight · 量化增长分析系统 v2.1")
 
 # 1. 搜索与选择
 address_input = st.text_input("请输入餐厅地址", placeholder="例如：2406 19th Ave, San Francisco")
@@ -743,39 +789,30 @@ if address_input:
                     )
                     
                     if uploaded_files:
-                        bundle, dfs = DataPipeline.process_bundle(uploaded_files)
+                        op_data = DataPipeline.build_canonical_schema(uploaded_files)
                         
-                        # 三块可视化：已识别、缺失、假设
-                        v_col1, v_col2, v_col3 = st.columns(3)
+                        # 可视化反馈
+                        v_col1, v_col2 = st.columns([2, 1])
                         with v_col1:
-                            st.success("**已识别字段**")
-                            for f in bundle["verified"].keys(): st.write(f"✅ {f}")
-                        with v_col2:
-                            st.warning("**缺失字段**")
-                            all_needed = ['orders', 'revenue', 'aov', 'cancel_rate', 'prep_time']
-                            missing = [f for f in all_needed if f not in bundle["verified"] and f not in bundle["derived"]]
-                            for f in missing: st.write(f"❓ {f}")
-                        with v_col3:
-                            st.info("**将采用的模型假设**")
-                            for f in missing: st.write(f"🔮 {f} (Industry Prior)")
+                            st.write("**数据质量审计**")
+                            if op_data["data_quality_report"]["missing_fields"]:
+                                st.warning(f"缺失关键字段: {', '.join(op_data['data_quality_report']['missing_fields'])}")
+                            if op_data["time_series"]:
+                                st.success(f"解析成功: 获取到 {len(op_data['time_series'])} 条记录")
+                                st.dataframe(pd.DataFrame(op_data["time_series"]).head(10))
                         
-                        # 按钮逻辑
-                        c_btn1, c_btn2 = st.columns(2)
-                        with c_btn1:
-                            if st.button("🔍 解析并预览数据内容"):
-                                for d in dfs: st.dataframe(d.head(5))
-                                
-                        with c_btn2:
-                            if st.button("🔄 使用上传数据重新生成报告", type="primary"):
-                                with st.progress(0, text="正在启动数据增强管线..."):
-                                    # 构造上传数据的分析 schema
-                                    op_data = {
-                                        "traceability": bundle["traceability"],
-                                        "sample_metrics": bundle["verified"]
-                                    }
-                                    new_report = generate_report(data, lang, operational_data=op_data)
-                                    st.session_state.report_content = new_report
-                                    st.rerun()
+                        with v_col2:
+                            st.write("**字段来源追溯**")
+                            for item in op_data["traceability"]:
+                                st.caption(f"{item['field']}: {item['tag']} ({item['source']})")
+                        
+                        # 重新生成按钮
+                        if st.button("🔄 注入真实数据并重新建模生成报告", type="primary"):
+                            with st.progress(0, text="正在同步量化模型..."):
+                                new_report = generate_report(data, lang, operational_data=op_data)
+                                st.session_state.report_content = new_report
+                                st.rerun()
+
 
                     # Admin 回滚开关 (隐藏)
                     if st.toggle("Admin: 使用旧模型版本 (Rollback Mode)", value=False):
