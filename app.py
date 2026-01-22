@@ -24,6 +24,14 @@ PDF_STYLE_FILES = [
     "/mnt/data/样本3.pdf"
 ]
 
+
+
+try:
+    from meteostat import Point, Daily
+except Exception as e:
+    import streamlit as st
+    st.error(f"Missing dependency: meteostat. Please check requirements.txt. Error: {e}")
+    st.stop()
 # ============================
 # PDF STYLE LOADER
 # ============================
