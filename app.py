@@ -9,6 +9,7 @@ import pandas as pd
 import nltk
 import time
 import concurrent.futures
+import io
 
 # Ensure TextBlob corpora are downloaded
 try:
@@ -276,7 +277,6 @@ def generate_report(data, lang="zh"):
 
     try:
         # 使用用户提供的 Prompt Template ID 调用
-        # 注意：这通常需要特定的 OpenAI 库版本支持 'responses' 端点
         response = client.responses.create(
             prompt={
                 "id": "pmpt_6971b3bd094081959997af7730098d45020d02ec1efab62b",
@@ -284,34 +284,39 @@ def generate_report(data, lang="zh"):
                 "variables": {
                     "restaurant_name": restaurant_name,
                     "restaurant_address": restaurant_address,
-                    "input_data": input_data_str,
-                    "language": "Chinese" if lang == "zh" else "English"
+                    "input_data": input_data_str
                 }
             }
         )
-        # 尝试标准返回结构
-        if hasattr(response, 'choices') and len(response.choices) > 0:
-            return response.choices[0].message.content
-        elif hasattr(response, 'output_text'): # 尝试猜测常见的字段
-            return response.output_text
-        elif hasattr(response, 'content'):
-            return response.content
-        else:
-            # 如果返回结构不同，尝试直接返回，并打印调试信息
-            debug_info = {
-                "type": str(type(response)),
-                "dir": dir(response),
-                "raw": str(response)
-            }
-            # 尝试将对象转为字典（如果是 Pydantic 模型）
-            if hasattr(response, 'model_dump'):
-                debug_info['model_dump'] = response.model_dump()
-            elif hasattr(response, 'to_dict'):
-                debug_info['to_dict'] = response.to_dict()
-            elif hasattr(response, '__dict__'):
-                debug_info['__dict__'] = response.__dict__
+        
+        # 正确解析 OpenAI Responses API (Beta) 的返回结构
+        # 根据日志，内容通常在 response.output.content 中
+        try:
+            if hasattr(response, 'output') and hasattr(response.output, 'content'):
+                content_blocks = response.output.content
+                text_content = ""
+                for block in content_blocks:
+                    # 检查是否是文本块并提取其值
+                    if hasattr(block, 'text') and hasattr(block.text, 'value'):
+                        text_content += block.text.value
+                    elif isinstance(block, dict) and 'text' in block:
+                        text_content += block['text'].get('value', '')
                 
-            return f"⚠️ 无法解析 API 响应结构。请将以下调试信息发送给开发者以进行修复：\n\n{json.dumps(debug_info, default=str, indent=2, ensure_ascii=False)}"
+                if text_content:
+                    return text_content
+
+            # 备选方案：尝试从 choices 提取 (如果是标准 ChatCompletion 结构)
+            if hasattr(response, 'choices') and len(response.choices) > 0:
+                return response.choices[0].message.content
+                
+            # 如果以上都失败，尝试将整个对象转为 JSON 字符串以便观察
+            if hasattr(response, 'model_dump_json'):
+                return f"⚠️ 自动解析失败，原始 JSON 响应：\n\n{response.model_dump_json(indent=2)}"
+            
+            return f"⚠️ 无法解析 API 响应。原始对象：\n\n{str(response)}"
+
+        except Exception as parse_err:
+            return f"❌ 解析 API 响应时出错: {str(parse_err)}\n\n原始响应: {str(response)}"
 
     except AttributeError:
         # 如果当前环境的 OpenAI 库不支持 client.responses
