@@ -6,7 +6,7 @@ import streamlit as st
 from datetime import datetime, timedelta
 import requests
 import pandas as pd
-from PyPDF2 import PdfReader
+
 from meteostat import Point, Daily
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
@@ -22,8 +22,8 @@ YELP_API_KEY = os.getenv("YELP_API_KEY")
 CENSUS_API_KEY = os.getenv("CENSUS_API_KEY")
 
 PDF_STYLE_FILES = [
-    "/mnt/data/Aurainsight门店分析【东南风美食】.pdf",
-    "/mnt/data/样本3.pdf"
+    "data/Aurainsight门店分析【东南風美食】.txt",
+    "data/样本3.txt"
 ]
 
 
@@ -39,12 +39,10 @@ except Exception as e:
 # ============================
 def load_pdf_text(path):
     if not os.path.exists(path):
-        st.warning(f"Warning: PDF style file not found: {path}. Skipping.")
+        st.warning(f"Warning: Style file not found: {path}. Skipping.")
         return ""
-    reader = PdfReader(path)
-    text = ""
-    for p in reader.pages:
-        text += p.extract_text() + "\n"
+    with open(path, "r", encoding="utf-8") as f:
+        text = f.read()
     return text
 
 STYLE_CONTEXT = "\n".join([load_pdf_text(p) for p in PDF_STYLE_FILES])
