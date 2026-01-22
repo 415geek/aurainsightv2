@@ -284,7 +284,8 @@ def generate_report(data, lang="zh"):
                 "variables": {
                     "restaurant_name": restaurant_name,
                     "restaurant_address": restaurant_address,
-                    "input_data": input_data_str
+                    "input_data": input_data_str,
+                    "language": "Chinese" if lang == "zh" else "English"
                 }
             }
         )
