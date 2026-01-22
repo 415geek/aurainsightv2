@@ -94,6 +94,74 @@ def yelp_match(name, lat, lng):
         st.warning(f"Yelp API call failed: {str(e)}")
         return []
 
+# ============================
+# METEOSTAT
+# ============================
+def get_weather(lat, lng, days=30):
+    try:
+        loc = Point(lat, lng)
+        end = datetime.now()
+        start = end - timedelta(days=days)
+        df = Daily(loc, start, end).fetch()
+        return df.reset_index()
+    except Exception as e:
+        st.warning(f"Weather data fetch failed: {e}")
+        return pd.DataFrame()
+
+# ============================
+# NOAA CURRENT
+# ============================
+def noaa_forecast(lat, lng):
+    try:
+        url = f"https://api.weather.gov/points/{lat},{lng}"
+        # NOAA requires User-Agent
+        headers = {"User-Agent": "AuraInsight-App/1.0"}
+        meta_resp = requests.get(url, headers=headers)
+        if meta_resp.status_code != 200:
+            return {}
+        
+        meta = meta_resp.json()
+        forecast_url = meta.get("properties", {}).get("forecast")
+        if not forecast_url:
+            return {}
+            
+        forecast_resp = requests.get(forecast_url, headers=headers)
+        return forecast_resp.json() if forecast_resp.status_code == 200 else {}
+    except Exception:
+        return {}
+
+# ============================
+# CENSUS
+# ============================
+def census_data(lat, lng):
+    # simplified demo placeholder
+    return {
+        "population_est": "40,000–60,000",
+        "asian_ratio": "40%–55%",
+        "median_income": "$90k–$110k"
+    }
+
+# ============================
+# PDF EXPORT
+# ============================
+def export_pdf(text, filename):
+    c = canvas.Canvas(filename, pagesize=letter)
+    width, height = letter
+    y = height - 40
+    # Simple text wrapping logic
+    for paragraph in text.split("\n"):
+        # Split long lines roughly
+        while len(paragraph) > 0:
+            line = paragraph[:90] # Approx chars per line
+            paragraph = paragraph[90:]
+            if y < 40:
+                c.showPage()
+                y = height - 40
+            # Register a font that supports utf-8 if needed, but for now standard
+            c.drawString(40, y, line)
+            y -= 14
+    c.save()
+
 # ... (中间代码保持不变) ...
 
 # ============================
