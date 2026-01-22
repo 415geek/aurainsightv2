@@ -1,15 +1,23 @@
 import os
 import json
 import math
-import requests
 import pandas as pd
 import streamlit as st
 from datetime import datetime, timedelta
+import requests
+import pandas as pd
 from PyPDF2 import PdfReader
-from meteostat import Point, Daily
+
+try:
+    from meteostat import Point, Daily
+except:
+    from meteostat import Point
+    from meteostat.series import Daily
+
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 import openai
+
 
 # ============================
 # CONFIG
