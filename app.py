@@ -11,6 +11,7 @@ from meteostat import Point, Daily
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from openai import OpenAI
+from textblob import TextBlob
 
 
 # ============================
@@ -72,6 +73,12 @@ def google_search(query):
     except Exception as e:
         return [{"error": f"Request failed: {str(e)}"}]
 
+def get_google_photo_url(photo_ref, max_width=400):
+    if not photo_ref:
+        return None
+    base_url = "https://maps.googleapis.com/maps/api/place/photo"
+    return f"{base_url}?maxwidth={max_width}&photo_reference={photo_ref}&key={GOOGLE_API_KEY}"
+
 # ============================
 # YELP
 # ============================
@@ -93,6 +100,46 @@ def yelp_match(name, lat, lng):
     except Exception as e:
         st.warning(f"Yelp API call failed: {str(e)}")
         return []
+
+def get_yelp_reviews(business_id):
+    if not YELP_API_KEY:
+        return []
+    
+    url = f"https://api.yelp.com/v3/businesses/{business_id}/reviews"
+    headers = {"Authorization": f"Bearer {YELP_API_KEY}"}
+    try:
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            return response.json().get("reviews", [])
+        return []
+    except Exception:
+        return []
+
+def analyze_sentiment(reviews):
+    if not reviews:
+        return {"score": 0, "label": "No Data", "keywords": []}
+    
+    full_text = " ".join([r.get("text", "") for r in reviews])
+    blob = TextBlob(full_text)
+    sentiment_score = blob.sentiment.polarity
+    
+    # Simple labeling
+    if sentiment_score > 0.3:
+        label = "Positive 😊"
+    elif sentiment_score < -0.1:
+        label = "Negative 😞"
+    else:
+        label = "Neutral 😐"
+        
+    # Extract keywords (simple noun phrases)
+    keywords = list(set([w.lower() for w in blob.noun_phrases if len(w) > 3]))[:5]
+    
+    return {
+        "score": sentiment_score,
+        "label": label,
+        "keywords": keywords
+    }
+
 
 # ============================
 # METEOSTAT
@@ -250,11 +297,37 @@ if address_input:
                     lat = place["geometry"]["location"]["lat"]
                     lng = place["geometry"]["location"]["lng"]
                     
-                    # 步骤 1: Yelp
-                    progress_bar.progress(25, text="正在匹配 Yelp 商家数据...")
-                    yelp_data = yelp_match(place["name"], lat, lng)
+                                        # 步骤 1: Yelp
                     
-                    # 步骤 2: 天气
+                                        progress_bar.progress(25, text="正在匹配 Yelp 商家数据...")
+                    
+                                        yelp_data = yelp_match(place["name"], lat, lng)
+                    
+                                        
+                    
+                                        # 1.1: 情感分析
+                    
+                                        yelp_reviews = []
+                    
+                                        sentiment_result = {}
+                    
+                                        if yelp_data:
+                    
+                                            try:
+                    
+                                                first_biz_id = yelp_data[0]['id']
+                    
+                                                yelp_reviews = get_yelp_reviews(first_biz_id)
+                    
+                                                sentiment_result = analyze_sentiment(yelp_reviews)
+                    
+                                            except Exception:
+                    
+                                                pass
+                    
+                                        
+                    
+                                        # 步骤 2: 天气
                     progress_bar.progress(50, text="正在获取历史与预测天气数据...")
                     weather_hist = get_weather(lat, lng)
                     noaa = noaa_forecast(lat, lng)
@@ -267,6 +340,8 @@ if address_input:
                     st.session_state.fetched_data = {
                         "place": place,
                         "yelp": yelp_data,
+                        "yelp_reviews": yelp_reviews,
+                        "sentiment": sentiment_result,
                         "weather_history": weather_hist.tail(10).to_dict(),
                         "noaa_forecast": noaa,
                         "census": census
@@ -290,6 +365,15 @@ if address_input:
                 st.divider()
                 st.subheader("📊 商家数据概要")
                 
+                # Photos
+                if "photos" in place:
+                    p_cols = st.columns(min(3, len(place["photos"])))
+                    for i, photo in enumerate(place["photos"][:3]):
+                        url = get_google_photo_url(photo.get("photo_reference"))
+                        if url:
+                            with p_cols[i]:
+                                st.image(url, use_column_width=True)
+                                
                 col1, col2, col3 = st.columns(3)
                 with col1:
                     st.info(f"**Google 评分**: {place.get('rating', 'N/A')} ({place.get('user_ratings_total', 0)} 条)")
@@ -299,6 +383,20 @@ if address_input:
                     st.error(f"**Yelp 评分**: {yelp_rating} ({yelp_count} 条)")
                 with col3:
                     st.success(f"**商圈人口 (3英里)**: {data['census']['population_est']}")
+
+                # Sentiment
+                if data.get("sentiment"):
+                    st.markdown("#### 💬 评论情感洞察")
+                    sent = data["sentiment"]
+                    s_col1, s_col2 = st.columns([1, 2])
+                    with s_col1:
+                        st.metric("情感倾向", sent.get("label", "N/A"), f"{sent.get('score', 0):.2f}")
+                    with s_col2:
+                        if sent.get("keywords"):
+                            st.write("**热门关键词:**")
+                            st.write(" ".join([f"`{k}`" for k in sent["keywords"]]))
+                        else:
+                            st.write("暂无足够评论提取关键词")
 
                 with st.expander("查看详细原始数据"):
                     st.json(data)

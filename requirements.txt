@@ -7,3 +7,4 @@ numpy==1.26.4
 reportlab>=4.0.9
 python-dateutil>=2.9.0.post0
 openai>=1.0.0
+textblob>=0.17.1
