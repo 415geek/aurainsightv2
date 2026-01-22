@@ -73,6 +73,26 @@ def google_search(query):
     except Exception as e:
         return [{"error": f"Request failed: {str(e)}"}]
 
+def get_google_reviews(place_id):
+    if not GOOGLE_API_KEY:
+        return []
+    url = "https://maps.googleapis.com/maps/api/place/details/json"
+    # 我们只需要 reviews 字段
+    params = {
+        "place_id": place_id,
+        "fields": "reviews",
+        "key": GOOGLE_API_KEY,
+        "language": "zh-CN" # 尝试获取中文评论，或者根据需求不加此参数获取原语言
+    }
+    try:
+        response = requests.get(url, params=params)
+        data = response.json()
+        if data.get("status") == "OK":
+            return data.get("result", {}).get("reviews", [])
+        return []
+    except Exception:
+        return []
+
 def get_google_photo_url(photo_ref, max_width=400):
     if not photo_ref:
         return None
@@ -297,37 +317,61 @@ if address_input:
                     lat = place["geometry"]["location"]["lat"]
                     lng = place["geometry"]["location"]["lng"]
                     
-                                        # 步骤 1: Yelp
+                                                            # 步骤 1: Yelp & Google 评论
                     
-                                        progress_bar.progress(25, text="正在匹配 Yelp 商家数据...")
+                                                            progress_bar.progress(25, text="正在获取 Yelp 与 Google 评论数据...")
                     
-                                        yelp_data = yelp_match(place["name"], lat, lng)
+                                                            yelp_data = yelp_match(place["name"], lat, lng)
                     
-                                        
+                                                            
                     
-                                        # 1.1: 情感分析
+                                                            # 1.1: 获取评论与情感分析
                     
-                                        yelp_reviews = []
+                                                            yelp_reviews = []
                     
-                                        sentiment_result = {}
+                                                            google_reviews = []
                     
-                                        if yelp_data:
+                                                            
                     
-                                            try:
+                                                            # 获取 Google 评论
                     
-                                                first_biz_id = yelp_data[0]['id']
+                                                            try:
                     
-                                                yelp_reviews = get_yelp_reviews(first_biz_id)
+                                                                google_reviews = get_google_reviews(place["place_id"])
                     
-                                                sentiment_result = analyze_sentiment(yelp_reviews)
+                                                            except Exception:
                     
-                                            except Exception:
-                    
-                                                pass
+                                                                pass
                     
                                         
                     
-                                        # 步骤 2: 天气
+                                                            # 获取 Yelp 评论
+                    
+                                                            if yelp_data:
+                    
+                                                                try:
+                    
+                                                                    first_biz_id = yelp_data[0]['id']
+                    
+                                                                    yelp_reviews = get_yelp_reviews(first_biz_id)
+                    
+                                                                except Exception:
+                    
+                                                                    pass
+                    
+                                                            
+                    
+                                                            # 合并评论进行分析
+                    
+                                                            # 注意：Google 评论对象也有 'text' 字段，与 Yelp 结构兼容
+                    
+                                                            all_reviews = google_reviews + yelp_reviews
+                    
+                                                            sentiment_result = analyze_sentiment(all_reviews)
+                    
+                                                            
+                    
+                                                            # 步骤 2: 天气
                     progress_bar.progress(50, text="正在获取历史与预测天气数据...")
                     weather_hist = get_weather(lat, lng)
                     noaa = noaa_forecast(lat, lng)
@@ -341,6 +385,7 @@ if address_input:
                         "place": place,
                         "yelp": yelp_data,
                         "yelp_reviews": yelp_reviews,
+                        "google_reviews": google_reviews,
                         "sentiment": sentiment_result,
                         "weather_history": weather_hist.tail(10).to_dict(),
                         "noaa_forecast": noaa,
