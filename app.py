@@ -274,6 +274,10 @@ def generate_report(data, lang="zh"):
     restaurant_address = data.get("place", {}).get("formatted_address", "Unknown Address")
     # 使用自定义序列化函数处理日期时间对象
     input_data_str = json.dumps(data, ensure_ascii=False, indent=2, default=json_serial)
+    
+    # 注入语言指令，确保 AI 即使在模板没有语言变量的情况下也能识别需求
+    lang_instruction = "\n\nIMPORTANT: The user has requested the report to be generated in Chinese (zh)." if lang == "zh" else "\n\nIMPORTANT: The user has requested the report to be generated in English (en)."
+    input_data_with_lang = input_data_str + lang_instruction
 
     try:
         # 1. 创建响应任务
@@ -284,7 +288,7 @@ def generate_report(data, lang="zh"):
                 "variables": {
                     "restaurant_name": restaurant_name,
                     "restaurant_address": restaurant_address,
-                    "input_data": input_data_str
+                    "input_data": input_data_with_lang
                 }
             }
         )
