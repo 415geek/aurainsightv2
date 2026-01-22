@@ -1,5 +1,8 @@
 streamlit
-pandas
-numpy
 requests
-scipy
+pandas
+openai
+PyPDF2
+meteostat
+reportlab
+python-dateutil
