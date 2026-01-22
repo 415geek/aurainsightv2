@@ -142,9 +142,11 @@ def export_pdf(text, filename):
 # ============================
 st.title("AuraInsight · 商圈与增长分析系统")
 
-query = st.text_input("输入餐厅地址或名称")
+restaurant_name = st.text_input("输入餐厅名称")
+city = st.text_input("输入城市")
 
-if query:
+if restaurant_name and city:
+    query = f"{restaurant_name} in {city}"
     results = google_search(query)
     options = [f"{r['name']} | {r['formatted_address']}" for r in results]
     idx = st.selectbox("选择匹配餐厅", range(len(options)), format_func=lambda i: options[i])
