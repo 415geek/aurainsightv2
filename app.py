@@ -291,9 +291,26 @@ def generate_report(data, lang="zh"):
         # 尝试标准返回结构
         if hasattr(response, 'choices') and len(response.choices) > 0:
             return response.choices[0].message.content
+        elif hasattr(response, 'output_text'): # 尝试猜测常见的字段
+            return response.output_text
+        elif hasattr(response, 'content'):
+            return response.content
         else:
-            # 如果返回结构不同，尝试直接返回
-            return str(response)
+            # 如果返回结构不同，尝试直接返回，并打印调试信息
+            debug_info = {
+                "type": str(type(response)),
+                "dir": dir(response),
+                "raw": str(response)
+            }
+            # 尝试将对象转为字典（如果是 Pydantic 模型）
+            if hasattr(response, 'model_dump'):
+                debug_info['model_dump'] = response.model_dump()
+            elif hasattr(response, 'to_dict'):
+                debug_info['to_dict'] = response.to_dict()
+            elif hasattr(response, '__dict__'):
+                debug_info['__dict__'] = response.__dict__
+                
+            return f"⚠️ 无法解析 API 响应结构。请将以下调试信息发送给开发者以进行修复：\n\n{json.dumps(debug_info, default=str, indent=2, ensure_ascii=False)}"
 
     except AttributeError:
         # 如果当前环境的 OpenAI 库不支持 client.responses
