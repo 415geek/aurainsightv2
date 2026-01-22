@@ -80,29 +80,37 @@ def google_search(query):
 def generate_report(data, lang="zh"):
     client = OpenAI(api_key=OPENAI_API_KEY)
 
-    prompt = f"""
-你是商业分析咨询AI，请严格按照以下样板逻辑生成报告风格：
+    # 准备变量
+    restaurant_name = data.get("place", {}).get("name", "Unknown Restaurant")
+    restaurant_address = data.get("place", {}).get("formatted_address", "Unknown Address")
+    input_data_str = json.dumps(data, ensure_ascii=False, indent=2)
 
-【样板参考】:
-{STYLE_CONTEXT[:6000]}
+    try:
+        # 使用用户提供的 Prompt Template ID 调用
+        # 注意：这通常需要特定的 OpenAI 库版本支持 'responses' 端点
+        response = client.responses.create(
+            prompt={
+                "id": "pmpt_6971b3bd094081959997af7730098d45020d02ec1efab62b",
+                "version": "2",
+                "variables": {
+                    "restaurant_name": restaurant_name,
+                    "restaurant_address": restaurant_address,
+                    "input_data": input_data_str
+                }
+            }
+        )
+        # 尝试标准返回结构
+        if hasattr(response, 'choices') and len(response.choices) > 0:
+            return response.choices[0].message.content
+        else:
+            # 如果返回结构不同，尝试直接返回
+            return str(response)
 
-【真实数据】:
-{json.dumps(data, ensure_ascii=False, indent=2)}
-
-要求：
-- 报告结构必须与样板一致
-- 标注 [FACT] [ASSUMPTION] [INFERENCE] [STRATEGY]
-- 逻辑必须像麦肯锡顾问
-- 风格必须专业、冷静、数据驱动
-- 输出语言：{lang}
-"""
-
-    resp = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.3
-    )
-    return resp.choices[0].message.content
+    except AttributeError:
+        # 如果当前环境的 OpenAI 库不支持 client.responses
+        return "❌ Error: 您的 OpenAI Python 库版本可能不支持 `client.responses.create`。请确认这是否为 Beta 功能或需要特定版本。"
+    except Exception as e:
+        return f"❌ 生成报告时发生错误: {str(e)}"
 
 # ... (中间代码保持不变) ...
 
