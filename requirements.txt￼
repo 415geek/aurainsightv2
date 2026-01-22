@@ -1,8 +1,8 @@
-streamlit
-requests
-pandas
-openai
-PyPDF2
-meteostat
-reportlab
-python-dateutil
+streamlit>=1.32.0
+requests>=2.31.0
+pandas>=2.2.0
+PyPDF2>=3.0.1
+meteostat>=1.6.7
+reportlab>=4.0.9
+python-dateutil>=2.9.0.post0
+openai>=1.0.0
