@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 import requests
 import pandas as pd
 import nltk
+import time
+import concurrent.futures
 
 # Ensure TextBlob corpora are downloaded
 try:
@@ -456,22 +458,43 @@ if address_input:
                         
                         try:
                             # 阶段 1: 准备上下文
-                            report_progress.progress(20, text="正在整合商家数据与商圈信息...")
-                            # 模拟一点处理时间，让用户看清提示
-                            import time
-                            time.sleep(0.5) 
+                            report_progress.progress(10, text="正在整合商家数据与商圈信息...")
+                            time.sleep(0.5)
                             
                             # 阶段 2: 构建 Prompt
-                            report_progress.progress(40, text="正在构建高维分析模型...")
+                            report_progress.progress(30, text="正在构建高维分析模型...")
                             
-                            # 阶段 3: 调用 API (这是最耗时的部分)
-                            report_progress.progress(60, text="AI 顾问正在生成策略报告 (这可能需要 30-60 秒)...")
+                            # 阶段 3: 异步调用 API 并动态更新文字
+                            loading_texts = [
+                                "正在通过 GPT-4o 进行深度推理...",
+                                "正在分析 Yelp 与 Google 评论情感趋势...",
+                                "正在结合 Meteostat 历史天气数据进行回归分析...",
+                                "正在交叉比对 Census 商圈人口统计数据...",
+                                "正在生成麦肯锡风格的战略建议...",
+                                "正在优化报告格式与排版..."
+                            ]
                             
-                            # 这里的调用是同步的，会阻塞直到返回
-                            report = generate_report(data, lang)
+                            with concurrent.futures.ThreadPoolExecutor() as executor:
+                                future = executor.submit(generate_report, data, lang)
+                                
+                                # 循环更新进度条文字，直到任务完成
+                                idx = 0
+                                progress_val = 30
+                                while not future.done():
+                                    current_text = loading_texts[idx % len(loading_texts)]
+                                    # 让进度条缓慢增加，但不到 100%
+                                    if progress_val < 90:
+                                        progress_val += 1
+                                    
+                                    report_progress.progress(progress_val, text=f"AI 顾问工作流: {current_text}")
+                                    time.sleep(1.5) # 每 1.5 秒切换一次文字
+                                    idx += 1
+                                
+                                # 获取结果
+                                report = future.result()
                             
                             # 阶段 4: 处理响应
-                            report_progress.progress(90, text="正在格式化报告内容...")
+                            report_progress.progress(95, text="正在最终格式化报告内容...")
                             st.session_state.report_content = report
                             
                             # 完成
