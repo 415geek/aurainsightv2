@@ -276,7 +276,7 @@ def generate_report(data, lang="zh"):
     input_data_str = json.dumps(data, ensure_ascii=False, indent=2, default=json_serial)
 
     try:
-        # 使用用户提供的 Prompt Template ID 调用
+        # 1. 创建响应任务
         response = client.responses.create(
             prompt={
                 "id": "pmpt_6971b3bd094081959997af7730098d45020d02ec1efab62b",
@@ -289,49 +289,55 @@ def generate_report(data, lang="zh"):
             }
         )
         
-        # 正确解析 OpenAI Responses API (Beta) 的返回结构
-        try:
-            text_content = ""
+        # 2. 轮询状态，直到完成 (OpenAI Responses API 是异步的)
+        import time
+        max_retries = 30 # 最多等待 60 秒 (2s * 30)
+        retries = 0
+        final_response = response
+        
+        while retries < max_retries:
+            # 检查当前状态
+            # 如果状态已经是 completed 或 failed，退出循环
+            if hasattr(final_response, 'status'):
+                if final_response.status == 'completed':
+                    break
+                if final_response.status in ['failed', 'incomplete', 'cancelled']:
+                    return f"❌ AI 响应失败 (状态: {final_response.status})"
             
-            # 1. 尝试从 response.output (列表) 中提取
-            if hasattr(response, 'output') and isinstance(response.output, list):
-                for item in response.output:
-                    # 检查 item 是否有 content 属性 (通常是 message 类型)
-                    if hasattr(item, 'content') and isinstance(item.content, list):
-                        for part in item.content:
-                            # 提取文本内容
-                            if hasattr(part, 'text') and hasattr(part.text, 'value'):
+            # 等待并重新获取状态
+            time.sleep(2)
+            final_response = client.responses.retrieve(final_response.id)
+            retries += 1
+            
+        # 3. 解析最终生成的文本内容
+        text_content = ""
+        if hasattr(final_response, 'output') and isinstance(final_response.output, list):
+            for item in final_response.output:
+                # 寻找类型为 message 的输出项
+                if hasattr(item, 'content') and isinstance(item.content, list):
+                    for part in item.content:
+                        # 处理文本块
+                        if hasattr(part, 'text'):
+                            # 有些版本是 part.text.value，有些是 part.text
+                            if hasattr(part.text, 'value'):
                                 text_content += part.text.value
-                            elif isinstance(part, dict) and 'text' in part:
-                                t = part['text']
-                                if isinstance(t, dict):
-                                    text_content += t.get('value', '')
-                                else:
-                                    text_content += str(t)
+                            elif isinstance(part.text, str):
+                                text_content += part.text
+                        elif isinstance(part, dict) and 'text' in part:
+                            t = part['text']
+                            text_content += t.get('value', t) if isinstance(t, dict) else str(t)
+        
+        if text_content:
+            return text_content
             
-            # 2. 如果 output 为空，尝试从 choices 提取 (标准 ChatCompletion 结构)
-            if not text_content and hasattr(response, 'choices') and len(response.choices) > 0:
-                text_content = response.choices[0].message.content
-                
-            # 3. 最后的兜底：尝试直接访问 content
-            if not text_content and hasattr(response, 'content'):
-                text_content = str(response.content)
+        # 兜底显示：如果轮询超时或解析失败
+        if hasattr(final_response, 'model_dump_json'):
+            return f"⚠️ 报告生成超时或解析失败。原始 JSON：\n\n{final_response.model_dump_json(indent=2, ensure_ascii=False)}"
+        
+        return f"⚠️ 无法获取报告内容。状态: {getattr(final_response, 'status', 'unknown')}"
 
-            if text_content:
-                return text_content
-                
-            # 如果还是没找到内容，输出原始 JSON 供调试
-            if hasattr(response, 'model_dump_json'):
-                return f"⚠️ 自动解析失败，原始 JSON 响应：\n\n{response.model_dump_json(indent=2, ensure_ascii=False)}"
-            
-            return f"⚠️ 无法解析 API 响应。原始对象：\n\n{str(response)}"
-
-        except Exception as parse_err:
-            return f"❌ 解析 API 响应时出错: {str(parse_err)}\n\n原始响应: {str(response)}"
-
-    except AttributeError:
-        # 如果当前环境的 OpenAI 库不支持 client.responses
-        return "❌ Error: 您的 OpenAI Python 库版本可能不支持 `client.responses.create`。请确认这是否为 Beta 功能或需要特定版本。"
+    except AttributeError as ae:
+        return f"❌ OpenAI 库版本不支持此操作或 API 结构已变更: {str(ae)}"
     except Exception as e:
         return f"❌ 生成报告时发生错误: {str(e)}"
 
