@@ -12,9 +12,15 @@ st.title("🔧 系统 API 健康检查诊断")
 st.markdown("此页面用于验证所有外部服务的连通性和 API Key 配置情况。")
 
 # 获取 Keys
-GOOGLE_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
-YELP_API_KEY = os.getenv("YELP_API_KEY")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+def get_secret(key):
+    try:
+        return st.secrets[key]
+    except (FileNotFoundError, KeyError):
+        return os.getenv(key)
+
+GOOGLE_API_KEY = get_secret("GOOGLE_MAPS_API_KEY")
+YELP_API_KEY = get_secret("YELP_API_KEY")
+OPENAI_API_KEY = get_secret("OPENAI_API_KEY")
 openai.api_key = OPENAI_API_KEY
 
 def check_google():

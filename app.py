@@ -16,10 +16,20 @@ import openai
 # ============================
 # CONFIG
 # ============================
-openai.api_key = os.getenv("OPENAI_API_KEY")
-GOOGLE_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
-YELP_API_KEY = os.getenv("YELP_API_KEY")
-CENSUS_API_KEY = os.getenv("CENSUS_API_KEY")
+def get_secret(key):
+    # 优先尝试从 Streamlit Secrets 读取
+    try:
+        return st.secrets[key]
+    except (FileNotFoundError, KeyError):
+        # 回退到环境变量
+        return os.getenv(key)
+
+OPENAI_API_KEY = get_secret("OPENAI_API_KEY")
+GOOGLE_API_KEY = get_secret("GOOGLE_MAPS_API_KEY")
+YELP_API_KEY = get_secret("YELP_API_KEY")
+CENSUS_API_KEY = get_secret("CENSUS_API_KEY")
+
+openai.api_key = OPENAI_API_KEY
 
 PDF_STYLE_FILES = [
     "data/Aurainsight门店分析【东南风美食】.txt",
