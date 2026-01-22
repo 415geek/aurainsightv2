@@ -167,13 +167,20 @@ def export_pdf(text, filename):
 # ============================
 # AI REPORT ENGINE
 # ============================
+def json_serial(obj):
+    """JSON serializer for objects not serializable by default json code"""
+    if isinstance(obj, (datetime, datetime.date)):
+        return obj.isoformat()
+    raise TypeError(f"Type {type(obj)} not serializable")
+
 def generate_report(data, lang="zh"):
     client = OpenAI(api_key=OPENAI_API_KEY)
 
     # 准备变量
     restaurant_name = data.get("place", {}).get("name", "Unknown Restaurant")
     restaurant_address = data.get("place", {}).get("formatted_address", "Unknown Address")
-    input_data_str = json.dumps(data, ensure_ascii=False, indent=2)
+    # 使用自定义序列化函数处理日期时间对象
+    input_data_str = json.dumps(data, ensure_ascii=False, indent=2, default=json_serial)
 
     try:
         # 使用用户提供的 Prompt Template ID 调用
