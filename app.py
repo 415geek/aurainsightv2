@@ -290,28 +290,39 @@ def generate_report(data, lang="zh"):
         )
         
         # 正确解析 OpenAI Responses API (Beta) 的返回结构
-        # 根据日志，内容通常在 response.output.content 中
         try:
-            if hasattr(response, 'output') and hasattr(response.output, 'content'):
-                content_blocks = response.output.content
-                text_content = ""
-                for block in content_blocks:
-                    # 检查是否是文本块并提取其值
-                    if hasattr(block, 'text') and hasattr(block.text, 'value'):
-                        text_content += block.text.value
-                    elif isinstance(block, dict) and 'text' in block:
-                        text_content += block['text'].get('value', '')
+            text_content = ""
+            
+            # 1. 尝试从 response.output (列表) 中提取
+            if hasattr(response, 'output') and isinstance(response.output, list):
+                for item in response.output:
+                    # 检查 item 是否有 content 属性 (通常是 message 类型)
+                    if hasattr(item, 'content') and isinstance(item.content, list):
+                        for part in item.content:
+                            # 提取文本内容
+                            if hasattr(part, 'text') and hasattr(part.text, 'value'):
+                                text_content += part.text.value
+                            elif isinstance(part, dict) and 'text' in part:
+                                t = part['text']
+                                if isinstance(t, dict):
+                                    text_content += t.get('value', '')
+                                else:
+                                    text_content += str(t)
+            
+            # 2. 如果 output 为空，尝试从 choices 提取 (标准 ChatCompletion 结构)
+            if not text_content and hasattr(response, 'choices') and len(response.choices) > 0:
+                text_content = response.choices[0].message.content
                 
-                if text_content:
-                    return text_content
+            # 3. 最后的兜底：尝试直接访问 content
+            if not text_content and hasattr(response, 'content'):
+                text_content = str(response.content)
 
-            # 备选方案：尝试从 choices 提取 (如果是标准 ChatCompletion 结构)
-            if hasattr(response, 'choices') and len(response.choices) > 0:
-                return response.choices[0].message.content
+            if text_content:
+                return text_content
                 
-            # 如果以上都失败，尝试将整个对象转为 JSON 字符串以便观察
+            # 如果还是没找到内容，输出原始 JSON 供调试
             if hasattr(response, 'model_dump_json'):
-                return f"⚠️ 自动解析失败，原始 JSON 响应：\n\n{response.model_dump_json(indent=2)}"
+                return f"⚠️ 自动解析失败，原始 JSON 响应：\n\n{response.model_dump_json(indent=2, ensure_ascii=False)}"
             
             return f"⚠️ 无法解析 API 响应。原始对象：\n\n{str(response)}"
 
