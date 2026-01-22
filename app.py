@@ -481,7 +481,12 @@ if address_input:
                                 idx = 0
                                 progress_val = 30
                                 while not future.done():
-                                    current_text = loading_texts[idx % len(loading_texts)]
+                                    if idx < len(loading_texts):
+                                        current_text = loading_texts[idx]
+                                    else:
+                                        # 如果所有预设文案都显示完了，不再循环，而是显示通用等待提示
+                                        current_text = "正在进行最终的深度逻辑整合，请耐心等待..."
+                                    
                                     # 让进度条缓慢增加，但不到 100%
                                     if progress_val < 90:
                                         progress_val += 1
