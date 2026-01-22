@@ -367,19 +367,44 @@ def census_data(lat, lng):
 # PDF EXPORT
 # ============================
 def export_pdf(text, filename):
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    import os
+
     c = canvas.Canvas(filename, pagesize=letter)
     width, height = letter
+    
+    # 字体尝试顺序：1. 项目自带字体 2. 系统字体 3. 默认
+    font_path = "data/simsun.ttf"
+    font_name = "Helvetica" # Default
+    
+    if os.path.exists(font_path):
+        try:
+            pdfmetrics.registerFont(TTFont('SimSun', font_path))
+            font_name = 'SimSun'
+        except:
+            pass
+    
+    c.setFont(font_name, 10)
     y = height - 40
+    
     # Simple text wrapping logic
     for paragraph in text.split("\n"):
-        # Split long lines roughly
+        if not paragraph.strip():
+            y -= 14
+            continue
+            
         while len(paragraph) > 0:
-            line = paragraph[:90] # Approx chars per line
-            paragraph = paragraph[90:]
+            # 这里的 90 是大约字符数，对中文可能偏多，改为 60 适应性更强
+            limit = 60 if font_name == 'SimSun' else 90
+            line = paragraph[:limit]
+            paragraph = paragraph[limit:]
+            
             if y < 40:
                 c.showPage()
+                c.setFont(font_name, 10)
                 y = height - 40
-            # Register a font that supports utf-8 if needed, but for now standard
+            
             c.drawString(40, y, line)
             y -= 14
     c.save()
@@ -750,29 +775,36 @@ if address_input:
             # 5. 可编辑报告与导出
             if "report_content" in st.session_state and st.session_state.current_place_id == place["place_id"]:
                 st.divider()
-                st.subheader("📝 深度分析报告 (可编辑)")
+                st.subheader("📝 深度分析报告")
                 
-                # 用户可以在这里修改报告
-                user_edited_report = st.text_area(
-                    "您可以直接修改下方的报告内容，修改后点击下载即可。",
-                    value=st.session_state.report_content,
-                    height=500,
-                    key="report_area"
-                )
+                # 优先展示 Markdown，解决浏览器渲染乱码问题
+                st.markdown(st.session_state.report_content)
                 
+                with st.expander("🛠 编辑报告内容 (源码模式)"):
+                    user_edited_report = st.text_area(
+                        "您可以直接修改下方的报告文本，修改后点击下方下载即可。",
+                        value=st.session_state.report_content,
+                        height=400,
+                        key="report_editor"
+                    )
+                
+                # 如果没有手动编辑，则使用原始生成的报告
+                final_report_to_export = user_edited_report if "report_editor" in st.session_state else st.session_state.report_content
+
                 # 导出按钮
                 col_exp1, col_exp2 = st.columns([1, 1])
                 with col_exp1:
                     if st.button("📥 导出 PDF 分析报告"):
-                        export_pdf(user_edited_report, "analysis_report.pdf")
-                        with open("analysis_report.pdf", "rb") as pdf_file:
-                            st.download_button(
-                                label="点击下载 PDF",
-                                data=pdf_file,
-                                file_name="AuraInsight_Report.pdf",
-                                mime="application/pdf"
-                            )
-                        st.success("PDF 已生成！")
+                        with st.spinner("正在生成 PDF (中文排版中)..."):
+                            export_pdf(final_report_to_export, "analysis_report.pdf")
+                            with open("analysis_report.pdf", "rb") as pdf_file:
+                                st.download_button(
+                                    label="点击下载 PDF",
+                                    data=pdf_file,
+                                    file_name="AuraInsight_Report.pdf",
+                                    mime="application/pdf"
+                                )
+                        st.success("PDF 已生成！注意：若 PDF 仍有乱码，请在 data/ 目录下提供 simsun.ttf 字体文件。")
 
                 # ============================
                 # 阶段 1.2: 补充数据上传区域 (闭环核心)
