@@ -144,4 +144,99 @@ if address_input:
         
         if idx is not None:
             place = results[idx]
-            # ... (后续代码) ...
+            
+            # 2. 确认按钮与动态进度条
+            if st.button("🚀 确认并开始分析商家数据"):
+                progress_bar = st.progress(0, text="正在初始化分析...")
+                
+                try:
+                    lat = place["geometry"]["location"]["lat"]
+                    lng = place["geometry"]["location"]["lng"]
+                    
+                    # 步骤 1: Yelp
+                    progress_bar.progress(25, text="正在匹配 Yelp 商家数据...")
+                    yelp_data = yelp_match(place["name"], lat, lng)
+                    
+                    # 步骤 2: 天气
+                    progress_bar.progress(50, text="正在获取历史与预测天气数据...")
+                    weather_hist = get_weather(lat, lng)
+                    noaa = noaa_forecast(lat, lng)
+                    
+                    # 步骤 3: 人口普查
+                    progress_bar.progress(75, text="正在查询商圈人口普查数据...")
+                    census = census_data(lat, lng)
+                    
+                    # 完成
+                    st.session_state.fetched_data = {
+                        "place": place,
+                        "yelp": yelp_data,
+                        "weather_history": weather_hist.tail(10).to_dict(),
+                        "noaa_forecast": noaa,
+                        "census": census
+                    }
+                    st.session_state.current_place_id = place["place_id"]
+                    
+                    # 清除旧的深度报告
+                    if "report_content" in st.session_state:
+                        del st.session_state.report_content
+                        
+                    progress_bar.progress(100, text="数据拉取完成！")
+                    
+                except Exception as e:
+                    st.error(f"数据拉取过程中发生错误: {str(e)}")
+                    progress_bar.empty()
+
+            # 3. 显示商家概要 (仅当数据已拉取时显示)
+            if "fetched_data" in st.session_state and st.session_state.current_place_id == place["place_id"]:
+                data = st.session_state.fetched_data
+                
+                st.divider()
+                st.subheader("📊 商家数据概要")
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.info(f"**Google 评分**: {place.get('rating', 'N/A')} ({place.get('user_ratings_total', 0)} 条)")
+                with col2:
+                    yelp_rating = data['yelp'][0]['rating'] if data['yelp'] else "N/A"
+                    yelp_count = data['yelp'][0]['review_count'] if data['yelp'] else 0
+                    st.error(f"**Yelp 评分**: {yelp_rating} ({yelp_count} 条)")
+                with col3:
+                    st.success(f"**人口概况**: {data['census']['population_est']}")
+
+                with st.expander("查看详细原始数据"):
+                    st.json(data)
+
+                st.divider()
+
+                # 4. 深度分析按钮
+                col_btn, col_lang = st.columns([1, 1])
+                with col_lang:
+                    lang = st.selectbox("报告语言", ["zh", "en"], key="report_lang")
+                
+                with col_btn:
+                    if st.button("🔍 生成深度AI策略报告", type="primary"):
+                        with st.spinner("AI 顾问正在根据所有数据点生成策略报告，请稍候..."):
+                            report = generate_report(data, lang)
+                            st.session_state.report_content = report
+            
+            # 5. 可编辑报告与导出
+            if "report_content" in st.session_state and st.session_state.current_place_id == place["place_id"]:
+                st.subheader("📝 深度分析报告 (可编辑)")
+                
+                # 用户可以在这里修改报告，修改后的内容会被返回给 user_edited_report
+                user_edited_report = st.text_area(
+                    "您可以直接修改下方的报告内容，修改后点击下载即可。",
+                    value=st.session_state.report_content,
+                    height=600
+                )
+                
+                if st.button("📥 导出 PDF 分析报告"):
+                    export_pdf(user_edited_report, "analysis_report.pdf")
+                    with open("analysis_report.pdf", "rb") as pdf_file:
+                        st.download_button(
+                            label="点击下载 PDF",
+                            data=pdf_file,
+                            file_name="AuraInsight_Report.pdf",
+                            mime="application/pdf"
+                        )
+                    st.success("PDF 已生成并准备下载！")
