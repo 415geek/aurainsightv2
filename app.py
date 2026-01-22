@@ -22,7 +22,7 @@ YELP_API_KEY = os.getenv("YELP_API_KEY")
 CENSUS_API_KEY = os.getenv("CENSUS_API_KEY")
 
 PDF_STYLE_FILES = [
-    "data/Aurainsight门店分析【东南風美食】.txt",
+    "data/Aurainsight门店分析【东南风美食】.txt",
     "data/样本3.txt"
 ]
 
