@@ -10,7 +10,7 @@ import pandas as pd
 from meteostat import Point, Daily
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
-import openai
+from openai import OpenAI
 
 
 # ============================
@@ -28,8 +28,6 @@ OPENAI_API_KEY = get_secret("OPENAI_API_KEY")
 GOOGLE_API_KEY = get_secret("GOOGLE_MAPS_API_KEY")
 YELP_API_KEY = get_secret("YELP_API_KEY")
 CENSUS_API_KEY = get_secret("CENSUS_API_KEY")
-
-openai.api_key = OPENAI_API_KEY
 
 PDF_STYLE_FILES = [
     "data/Aurainsight门店分析【东南风美食】.txt",
@@ -80,6 +78,8 @@ def google_search(query):
 # AI REPORT ENGINE
 # ============================
 def generate_report(data, lang="zh"):
+    client = OpenAI(api_key=OPENAI_API_KEY)
+
     prompt = f"""
 你是商业分析咨询AI，请严格按照以下样板逻辑生成报告风格：
 
@@ -97,8 +97,8 @@ def generate_report(data, lang="zh"):
 - 输出语言：{lang}
 """
 
-    resp = openai.ChatCompletion.create(
-        model="gpt-4o",  # Upgraded to gpt-4o
+    resp = client.chat.completions.create(
+        model="gpt-4o",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3
     )

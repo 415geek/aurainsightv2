@@ -1,7 +1,7 @@
 import streamlit as st
 import os
 import requests
-import openai
+from openai import OpenAI
 from datetime import datetime, timedelta
 from meteostat import Point, Daily
 
@@ -21,7 +21,6 @@ def get_secret(key):
 GOOGLE_API_KEY = get_secret("GOOGLE_MAPS_API_KEY")
 YELP_API_KEY = get_secret("YELP_API_KEY")
 OPENAI_API_KEY = get_secret("OPENAI_API_KEY")
-openai.api_key = OPENAI_API_KEY
 
 def check_google():
     st.subheader("1. Google Maps API (Places)")
@@ -80,8 +79,9 @@ def check_openai():
         return False
         
     try:
+        client = OpenAI(api_key=OPENAI_API_KEY)
         # 简单测试请求
-        resp = openai.ChatCompletion.create(
+        resp = client.chat.completions.create(
             model="gpt-4o",
             messages=[{"role": "user", "content": "Say 'OK' if you can hear me."}],
             max_tokens=10,
