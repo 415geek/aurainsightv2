@@ -838,12 +838,70 @@ if address_input:
                             for item in op_data["traceability"]:
                                 st.caption(f"{item['field']}: {item['tag']} ({item['source']})")
                         
-                        # 重新生成按钮
-                        if st.button("🔄 注入真实数据并重新建模生成报告", type="primary"):
-                            with st.progress(0, text="正在同步量化模型..."):
-                                new_report = generate_report(data, lang, operational_data=op_data)
-                                st.session_state.report_content = new_report
-                                st.rerun()
+                        # 按钮逻辑
+                        c_btn1, c_btn2 = st.columns(2)
+                        with c_btn1:
+                            if st.button("🔍 开始补充数据深度分析", type="primary"):
+                                report_progress = st.progress(0, text="正在启动增强版 AI 引擎...")
+                                try:
+                                    # 步骤 1: 准备上下文
+                                    report_progress.progress(10, text="正在同步真实运营数据 (VERIFIED)...")
+                                    time.sleep(1.0)
+                                    
+                                    # 步骤 2: 异步调用
+                                    loading_texts = [
+                                        "正在对比真实订单量与行业模型...",
+                                        "正在根据真实 AOV 调整营收预测公式...",
+                                        "正在计算天气波动对真实单量的影响系数...",
+                                        "正在生成校准后的 30/60/90 天执行路径..."
+                                    ]
+                                    
+                                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                                        future = executor.submit(generate_report, data, lang, op_data)
+                                        idx = 0
+                                        progress_val = 20
+                                        while not future.done():
+                                            current_text = loading_texts[idx % len(loading_texts)]
+                                            if progress_val < 90: progress_val += 2
+                                            report_progress.progress(progress_val, text=f"量化模型校准中: {current_text}")
+                                            time.sleep(1.5)
+                                            idx += 1
+                                        
+                                        updated_report = future.result()
+                                    
+                                    # 步骤 3: 存储并反馈
+                                    st.session_state.report_content = updated_report
+                                    report_progress.progress(100, text="增强版报告校准完毕！")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"补充分析失败: {str(e)}")
+
+                        # 如果当前报告内容是基于补充数据的，显示特定的编辑与导出
+                        if "report_content" in st.session_state:
+                            st.markdown("---")
+                            st.subheader("📊 校准后的深度分析报告")
+                            st.markdown(st.session_state.report_content)
+                            
+                            with st.expander("🛠 编辑增强版报告内容"):
+                                updated_editor = st.text_area(
+                                    "您可以根据真实情况进一步微调 AI 的建议：",
+                                    value=st.session_state.report_content,
+                                    height=400,
+                                    key="updated_report_editor"
+                                )
+                            
+                            final_updated_report = updated_editor if "updated_report_editor" in st.session_state else st.session_state.report_content
+                            
+                            if st.button("📥 导出增强版 PDF 报告"):
+                                with st.spinner("正在生成增强版 PDF..."):
+                                    export_pdf(final_updated_report, "enhanced_analysis_report.pdf")
+                                    with open("enhanced_analysis_report.pdf", "rb") as pdf_file:
+                                        st.download_button(
+                                            label="点击下载增强版 PDF",
+                                            data=pdf_file,
+                                            file_name="AuraInsight_Enhanced_Report.pdf",
+                                            mime="application/pdf"
+                                        )
 
 
                     # Admin 回滚开关 (隐藏)
