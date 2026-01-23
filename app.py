@@ -49,7 +49,7 @@ ENABLE_DATA_UPLOAD_PIPELINE = os.getenv("ENABLE_DATA_UPLOAD_PIPELINE", "true").l
 # 模式：prompt_bound (使用 OpenAI 后台绑定的模型) | explicit_model (显式指定 ID)
 AURAINSIGHT_MODEL_MODE = os.getenv("AURAINSIGHT_MODEL_MODE", "prompt_bound")
 AURAINSIGHT_MODEL_ID = os.getenv("AURAINSIGHT_MODEL_ID", "gpt-4o")
-AURAINSIGHT_PROMPT_ID = os.getenv("AURAINSIGHT_PROMPT_ID", "pmpt_6971b3bd094081959997af7730098d45020d02ec1efab62b")
+AURAINSIGHT_PROMPT_ID = os.getenv("AURAINSIGHT_PROMPT_ID", "pmpt_6972a83b789c819691b4f071f455646a07de30338afc67a2")
 
 # ============================
 # DATA PIPELINE (CANONICAL SCHEMA v2.1)
